@@ -1,0 +1,30 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+umask 077
+RUN=/var/run/obhod
+work=
+timer=
+cleanup() {
+    [ -z "$timer" ] || { kill "$timer" 2>/dev/null; wait "$timer" 2>/dev/null; }
+    if [ -n "$work" ]; then rm -rf "$work"; rmdir /var/lock/obhod-monitor.lock 2>/dev/null; fi
+}
+trap cleanup EXIT
+trap 'exit 143' TERM INT
+once() {
+    [ -f "$RUN/ready" ] && [ -s "$RUN/controller-secret" ] || return 1
+    mkdir /var/lock/obhod-monitor.lock 2>/dev/null || return 0
+    work=$(mktemp -d "$RUN/monitor.XXXXXX") || { rmdir /var/lock/obhod-monitor.lock; return 1; }
+    secret=$(cat "$RUN/controller-secret")
+    fetch() { (ulimit -c 0; ulimit -f 256; uclient-fetch -q -T 6 --header="Authorization: Bearer $secret" -O "$2" "http://127.0.0.1:2081$1") 2>/dev/null; }
+    printf '{}\n' > "$work/proxies"
+    printf '{}\n' > "$work/delay"
+    if fetch /proxies "$work/proxies"; then
+        tag=$(ucode /usr/libexec/obhod/inspect.uc tag "$work/proxies" 2>/dev/null)
+        case "$tag" in tunnel-*[!a-zA-Z0-9_-]*|'') ;; *) fetch "/proxies/$tag/delay?url=https%3A%2F%2Fwww.gstatic.com%2Fgenerate_204&timeout=4000" "$work/delay" || printf '{}\n' > "$work/delay" ;;
+        esac
+    fi
+    ucode /usr/libexec/obhod/inspect.uc result "$work/proxies" "$work/delay" > "$work/telemetry" 2>/dev/null && mv "$work/telemetry" "$RUN/telemetry.json"
+    rm -rf "$work"; rmdir /var/lock/obhod-monitor.lock; work=
+}
+if [ "$1" = once ]; then once; exit $?; fi
+while kill -0 "$1" 2>/dev/null; do once; sleep 30 & timer=$!; wait "$timer"; timer=; done

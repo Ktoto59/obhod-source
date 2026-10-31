@@ -1,0 +1,43 @@
+/* The home screen is a fixed dashboard; only content pages scroll. */
+html:has(.app-shell.home-active), body:has(.app-shell.home-active) { height: 100%; overflow: hidden; }
+.app-shell.home-active { height: 100vh; min-height: 0; }
+.app-shell.home-active > main { height: 100vh; padding-bottom: 28px; }
+.view#view-home { height: 100%; min-height: 0; overflow: hidden; }
+#view-home.active { display: flex; flex-direction: column; }
+#view-home .connection-hero { flex: 1; min-height: 0; }
+#view-home .connection-overview { flex: 0 0 auto; margin-bottom: 6px; }
+#view-home .tunnel-visual { width: 208px; height: 208px; flex-shrink: 0; }
+#view-home .update-banner { flex-shrink: 0; }
+.settings-tabs[hidden], .routing-save-bar[hidden] { display: none; }
+.nav-item { display: flex; align-items: center; font-size: 13px; }
+.nav-item span { flex: 0 0 25px; }
+#view-settings { padding-bottom: 72px; }
+.settings-tabs { gap: 6px; }
+.settings-tab { padding: 11px 14px; white-space: nowrap; }
+#settings-routing .routing-general .form-grid { grid-template-columns: minmax(0, 1fr); }
+#settings-routing .routing-general .form-grid > label { min-width: 0; }
+.site-lists { margin-top: 20px; }
+.site-lists > label { display: block; padding: 18px; }
+.advanced-fields { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 16px; }
+.advanced-fields summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+.advanced-fields > .form-grid { margin-top: 18px; }
+#view-help { max-width: 880px; }
+#view-help p { color: var(--muted); font-size: 13px; line-height: 1.7; }
+#view-help .quick-help-steps { margin: 0; }
+#helpLogSettings { margin-top: 18px; }
+#view-help .failure-policy { margin-top: 18px; }
+.backup-options { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.backup-options p, .backup-note { color: var(--muted); font-size: 13px; line-height: 1.65; }
+.backup-options .panel { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; }
+.backup-options .panel p { flex: 1; margin: 0; }
+.backup-dialog { max-height: 90vh; overflow: auto; }
+.backup-dialog p, .backup-dialog label { line-height: 1.6; }
+#backupPasswordFields > label { display: block; margin: 14px 0; font-size: 13px; color: #b7c1ca; }
+.backup-error { color: var(--red); font-size: 13px; }
+.backup-summary { padding: 15px; margin: 15px 0; border: 1px solid var(--line); border-radius: 10px; white-space: pre-line; line-height: 1.8; }
+.review-required { display: block; color: #e9c875; font-size: 12px; margin-top: 6px; }
+@media (max-height: 720px) {
+  #view-home .tunnel-visual { width: 172px; height: 172px; }
+  #view-home.has-update-banner .tunnel-visual { width: 146px; height: 146px; }
+  .app-shell.home-active > main { padding-top: 24px; padding-bottom: 20px; }
+}

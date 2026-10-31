@@ -1,0 +1,96 @@
+{
+  "name": "obhod",
+  "version": "0.18.0",
+  "description": "Выборочная маршрутизация для Windows и OpenWrt",
+  "author": "Obhod contributors",
+  "license": "Apache-2.0",
+  "repository": "https://github.com/Ktoto59/obhod-source",
+  "main": "windows/src/main/main.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "electron .",
+    "smoke": "electron . --smoke-test",
+    "test:ui": "electron . --ui-test",
+    "openwrt:core": "node scripts/build-openwrt-core.js",
+    "openwrt:fixture": "node scripts/check-openwrt-config.js",
+    "test:openwrt:ui": "electron scripts/check-openwrt-ui.js",
+    "icon": "node scripts/build-icon.js",
+    "test": "node scripts/check-compliance.js && node scripts/generate-npm-notices.js --check && node --test",
+    "license:check": "node scripts/check-compliance.js --require-runtime && node scripts/generate-npm-notices.js --check",
+    "licenses:update": "node scripts/generate-npm-notices.js",
+    "prebuild": "npm run license:check",
+    "build": "electron-builder --win portable",
+    "prebuild:installer": "npm run license:check",
+    "build:installer": "electron-builder --win nsis"
+  },
+  "devDependencies": {
+    "electron": "^39.2.7",
+    "electron-builder": "^26.0.12",
+    "sharp": "^0.34.5"
+  },
+  "build": {
+    "appId": "ru.obhod.desktop",
+    "productName": "Обход",
+    "asar": true,
+    "directories": {
+      "output": "release",
+      "buildResources": "windows/build"
+    },
+    "files": [
+      "windows/src/**/*",
+      "shared/**/*",
+      "windows/build/icon.png",
+      "package.json",
+      "README.md",
+      "windows/README.md",
+      "THIRD_PARTY_NOTICES.md",
+      "LICENSE",
+      "NOTICE",
+      "LICENSES/**/*",
+      "legal/**/*",
+      "windows/docs/BUILDING_RUNTIME.md",
+      "windows/docs/BACKUPS.md",
+      "docs/LICENSING.md"
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Ktoto59",
+        "repo": "obhod-releases",
+        "releaseType": "release"
+      }
+    ],
+    "extraResources": [
+      {
+        "from": "windows/runtime",
+        "to": "runtime",
+        "filter": [
+          "sing-box.exe"
+        ]
+      }
+    ],
+    "win": {
+      "target": "portable",
+      "artifactName": "Obhod-${version}.${ext}",
+      "icon": "windows/build/icon.ico",
+      "requestedExecutionLevel": "requireAdministrator"
+    },
+    "nsis": {
+      "artifactName": "Obhod-Setup-${version}.${ext}",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Обход",
+      "uninstallDisplayName": "Обход",
+      "deleteAppDataOnUninstall": false,
+      "runAfterFinish": true
+    }
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

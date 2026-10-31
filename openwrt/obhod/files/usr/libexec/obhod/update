@@ -1,0 +1,120 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+set -eu
+umask 077
+export LC_ALL=C
+RUN=/var/run/obhod
+LOCK=/var/lock/obhod-update.lock
+BASE=/usr/libexec/obhod
+die() { printf '%s\n' "$*" >&2; exit 1; }
+action=${2:-}
+case "$action" in check|install) ;; *) die 'Выберите check или install.' ;; esac
+mkdir -p "$RUN"; chmod 700 "$RUN"
+if [ "$1" = start ]; then
+    mkdir "$LOCK" 2>/dev/null || die 'Обновление уже выполняется.'
+    if ! mkdir /var/lock/obhod-apply.lock 2>/dev/null; then rmdir "$LOCK"; die 'Другая операция Обхода ещё выполняется.'; fi
+    work=
+    trap 'case "$work" in /tmp/obhod-update.*) rm -rf "$work";; esac; rm -f "$LOCK/pid" "$LOCK/work"; rmdir /var/lock/obhod-apply.lock "$LOCK" 2>/dev/null' EXIT
+    work=$(mktemp -d /tmp/obhod-update.XXXXXX) || die 'Не удалось создать рабочую папку.'
+    # Snapshot the worker: its installed source is replaced by the update itself.
+    cp "$0" "$work/worker"
+    cp "$BASE/package-lib.sh" "$BASE/update-metadata.uc" "$work/"
+    chmod 700 "$work/worker"
+    printf '%s\n' "$work" > "$LOCK/work"
+    printf 'running\n' > "$RUN/update-state"
+    printf 'Проверяем новую версию…\n' > "$RUN/update-message"
+    # A separate procd service survives rpcd reload and the closing browser tab.
+    (
+        set +u
+        . /usr/share/libubox/jshn.sh
+        json_init; json_add_string name obhod-update; json_add_object instances; json_add_object job
+        json_add_array command; json_add_string '' "$work/worker"; json_add_string '' worker; json_add_string '' "$action"; json_close_array
+        json_add_boolean stdout 1; json_add_boolean stderr 1; json_add_int term_timeout 10
+        json_close_object; json_close_object
+        ubus call service set "$(json_dump)" >/dev/null
+    ) || die 'Не удалось запустить фоновое обновление.'
+    trap - EXIT
+    exit 0
+fi
+[ "$1" = worker ] || die 'Неизвестная операция.'
+work=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+case "$work" in /tmp/obhod-update.*) ;; *) die 'Неверная рабочая папка.' ;; esac
+. "$work/package-lib.sh"
+exec > "$RUN/update-log" 2>&1
+printf '%s\n' "$$" > "$LOCK/pid"
+result=error
+message='Обновление прервано. Профиль сохранён; проверьте состояние пакетов.'
+was_running=0
+stopped=0
+reload=0
+finish() {
+    if [ "$stopped" = 1 ] && [ "$was_running" = 1 ]; then
+        if ! /usr/libexec/obhod/control start; then result=error; message='Пакеты обработаны, но служба не запустилась. Профиль сохранён; проверьте состояние Обхода.'; fi
+    fi
+    printf '%s\n' "$message" > "$RUN/update-message"
+    printf '%s\n' "$result" > "$RUN/update-state"
+    rm -f "$LOCK/pid" "$LOCK/work"
+    rmdir /var/lock/obhod-apply.lock "$LOCK" 2>/dev/null || true
+    cd /
+    rm -rf "$work"
+    if [ "$reload" = 1 ]; then
+        rm -f "$RUN/rpcd-reload-needed"
+        /etc/init.d/rpcd reload >/dev/null 2>&1 || true
+    fi
+}
+trap finish EXIT
+trap 'exit 130' INT TERM
+die() { message=$*; printf '%s\n' "$*" >&2; exit 1; }
+download() {
+    # Limits include responses without Content-Length. No credentials in logs.
+    { (ulimit -c 0; ulimit -f "$3"
+        uclient-fetch -q -T 60 --header='Accept: application/octet-stream' -O "$2" "$1"
+    ); code=$?; [ "$code" = 0 ]; } 2>/dev/null
+}
+download 'https://raw.githubusercontent.com/Ktoto59/obhod-releases/main/openwrt/release.json' "$work/release.json" 64 || die 'Не удалось проверить версию. Проверьте интернет и время роутера.'
+ucode "$work/update-metadata.uc" "$work/release.json" > "$work/validated.json" || die 'Сервер вернул некорректные сведения об обновлении.'
+cp "$work/validated.json" "$RUN/update-release.json"
+available=$(jsonfilter -i "$work/validated.json" -e '@.available')
+version=$(jsonfilter -i "$work/validated.json" -e '@.version')
+if [ "$available" != true ]; then result=current; message='Установлена актуальная версия Обхода.'; exit 0; fi
+if [ "$action" = check ]; then result=available; message="Доступна версия $version."; exit 0; fi
+detect_manager
+read_resources
+[ "$flash_free" -ge 2048 ] && [ "$tmp_free" -ge 4096 ] || die 'Для обновления требуется 2 МБ на накопителе и 4 МБ в /tmp.'
+url=$(jsonfilter -i "$work/validated.json" -e '@.bundleUrl')
+hash=$(jsonfilter -i "$work/validated.json" -e '@.bundleSha256')
+printf 'Загружаем Обход %s…\n' "$version" > "$RUN/update-message"
+download "$url" "$work/bundle.tar.gz" 8192 || die 'Не удалось загрузить обновление.'
+printf '%s  %s\n' "$hash" "$work/bundle.tar.gz" | sha256sum -c - || die 'Контрольная сумма обновления не совпала. Пакеты не изменены.'
+# Our bundle contains only flat regular files. Never extract paths or symlinks.
+tar -tzf "$work/bundle.tar.gz" > "$work/names" || die 'Некорректный архив обновления.'
+awk '{sub(/^\.\//, ""); if($0 !~ /^[a-zA-Z0-9_.-]+$/ || $0=="." || $0=="..")exit 1}' "$work/names" || die 'Недопустимые пути в архиве.'
+tar -tvzf "$work/bundle.tar.gz" | awk 'substr($0,1,1)!="-" {exit 1}' || die 'Недопустимый тип файла в архиве.'
+mkdir "$work/bundle"
+tar -xzf "$work/bundle.tar.gz" -C "$work/bundle" || die 'Не удалось распаковать обновление.'
+cd "$work/bundle"
+awk 'length($1)!=64 || $1 !~ /^[a-f0-9]+$/ || NF!=2 || $2 !~ /^[a-zA-Z0-9_.-]+$/ {exit 1}' SHA256SUMS || die 'Некорректный список контрольных сумм.'
+sha256sum -c SHA256SUMS || die 'Проверка файлов обновления не пройдена.'
+if [ "$manager" = apk ]; then
+    set -- "./obhod-$version-r1.apk" "./luci-app-obhod-$version-r1.apk"
+else set -- "./obhod_$version-1_all.ipk" "./luci-app-obhod_$version-1_all.ipk"; fi
+[ -f "$1" ] && [ -f "$2" ] || die 'В обновлении нет нужного формата пакетов.'
+mkdir "$work/profile"
+for name in settings.json defaults.json; do [ ! -f "/etc/obhod/$name" ] || cp -p "/etc/obhod/$name" "$work/profile/$name"; done
+[ ! -f "$RUN/ready" ] || was_running=1
+old_enabled=$(uci -q get obhod.main.enabled || echo 0)
+printf 'Устанавливаем обновление. Подключения временно приостановлены…\n' > "$RUN/update-message"
+/usr/libexec/obhod/control stop || die 'Не удалось безопасно остановить Обход.'
+stopped=1; reload=1
+installed=0
+if [ "$manager" = apk ]; then
+    apk --no-network add --allow-untrusted "$@" && installed=1
+else opkg install "$@" && installed=1; fi
+for name in settings.json defaults.json; do
+    [ ! -f "$work/profile/$name" ] || cp -p "$work/profile/$name" "/etc/obhod/$name"
+done
+uci set "obhod.main.enabled=$old_enabled"; uci commit obhod
+[ "$installed" = 1 ] || die 'Обновление пакетов не удалось. Профиль сохранён; проверьте пакеты или повторите стандартную установку.'
+[ "$(cat /usr/share/obhod/version)" = "$version" ] || die 'Версия установленных пакетов не совпала с обновлением. Профиль сохранён; проверьте пакеты.'
+result=done
+message='Обход обновлён. Перезагрузите страницу, чтобы открыть новую версию интерфейса.'

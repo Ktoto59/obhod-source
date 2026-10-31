@@ -1,0 +1,103 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# Modify only the selected dnsmasq instance's server/noresolv, with a durable backup.
+umask 077
+set -f
+. /usr/share/libubox/jshn.sh
+BACKUP=/etc/obhod/dns-backup.json
+[ "$1" != restore ] || [ -f "$BACKUP" ] || exit 0
+mkdir -p /var/run/obhod /var/lock
+attempt=0
+while ! mkdir /var/lock/obhod-dns.lock 2>/dev/null; do
+	[ "$attempt" -lt 5 ] || exit 1
+	sleep 1; attempt=$((attempt + 1))
+done
+WORK=$(mktemp -d /var/run/obhod/dns.XXXXXX) || { rmdir /var/lock/obhod-dns.lock; exit 1; }
+trap 'rm -f "$WORK/obhod_dns_work" "$WORK/.uci/obhod_dns_work"; rmdir "$WORK/.uci" "$WORK" 2>/dev/null; rmdir /var/lock/obhod-dns.lock 2>/dev/null' EXIT
+mkdir "$WORK/.uci"
+# A distinct package name prevents libuci from reading /tmp/.uci/dhcp deltas.
+# Commit this fresh snapshot, never another LuCI session's pending changes.
+cp /etc/config/dhcp "$WORK/obhod_dns_work" || exit 1
+original_hash=$(sha256sum /etc/config/dhcp)
+uci() { command uci -c "$WORK" -t "$WORK/.uci" "$@"; }
+commit_dns() {
+	uci commit obhod_dns_work || return 1
+	[ "$(sha256sum /etc/config/dhcp)" = "$original_hash" ] || return 1
+	cp -p /etc/config/dhcp /etc/config/.dhcp.obhod || return 1
+	cat "$WORK/obhod_dns_work" > /etc/config/.dhcp.obhod && mv /etc/config/.dhcp.obhod /etc/config/dhcp
+}
+
+append_server() { json_add_string '' "$1"; }
+reload_dns() { /etc/init.d/dnsmasq restart >/dev/null 2>&1; }
+load_backup() {
+	old_cache=; manage_cache=0
+	json_load "$(cat "$BACKUP")" || return 1
+	json_get_var section section
+	json_get_var old_noresolv noresolv
+	json_get_values servers servers
+	json_get_var old_cache cachesize
+	json_get_var manage_cache manageCache || manage_cache=0
+	return 0
+}
+is_original() {
+	[ "$(uci -q get "obhod_dns_work.$section.server")" = "$servers" ] &&
+	[ "$(uci -q get "obhod_dns_work.$section.noresolv")" = "$old_noresolv" ] &&
+	{ [ "$manage_cache" != 1 ] || [ "$(uci -q get "obhod_dns_work.$section.cachesize")" = "$old_cache" ]; }
+}
+is_applied() {
+	[ "$(uci -q get "obhod_dns_work.$section.server")" = '127.0.0.1#1053' ] &&
+	[ "$(uci -q get "obhod_dns_work.$section.noresolv")" = 1 ] &&
+	{ [ "$manage_cache" != 1 ] || [ "$(uci -q get "obhod_dns_work.$section.cachesize")" = 0 ]; }
+}
+
+case "$1" in
+	apply)
+		if [ -f "$BACKUP" ]; then
+			load_backup || exit 1
+			is_applied && exit 0
+			# A previous write may have failed after the durable backup was made.
+			is_original || exit 1
+			rm -f "$BACKUP"
+		fi
+		instances=$(uci -q -X show obhod_dns_work | sed -n 's/^obhod_dns_work\.\([a-zA-Z0-9_]*\)=dnsmasq$/\1/p')
+		set -- $instances
+		[ "$#" -eq 1 ] || { logger -t obhod 'Для управления DNS нужен один экземпляр dnsmasq. Настройте DNS вручную.'; exit 1; }
+		section=$1
+		old_noresolv=$(uci -q get "obhod_dns_work.$section.noresolv")
+		old_cache=$(uci -q get "obhod_dns_work.$section.cachesize")
+		manage_cache=1
+		json_init
+		json_add_string section "$section"
+		json_add_string noresolv "$old_noresolv"
+		json_add_string cachesize "$old_cache"
+		json_add_boolean manageCache "$manage_cache"
+		json_add_array servers
+		# dnsmasq server values cannot contain whitespace; do not eval UCI output.
+		for server in $(uci -q get "obhod_dns_work.$section.server"); do append_server "$server"; done
+		json_close_array
+		json_dump > "$BACKUP.tmp" && mv "$BACKUP.tmp" "$BACKUP" || exit 1
+		uci -q delete "obhod_dns_work.$section.server"
+		[ "$manage_cache" != 1 ] || uci set "obhod_dns_work.$section.cachesize=0" || exit 1
+		uci add_list "obhod_dns_work.$section.server=127.0.0.1#1053" && uci set "obhod_dns_work.$section.noresolv=1" && commit_dns && reload_dns && exit 0
+		# The worker's EXIT cleanup restores the durable backup on failure.
+		exit 1
+		;;
+	restore)
+		[ -f "$BACKUP" ] || exit 0
+		load_backup || exit 1
+		if is_original; then reload_dns && rm -f "$BACKUP"; exit $?; fi
+		if ! is_applied; then
+			logger -t obhod 'Настройки DNS изменены извне; сохранённая копия оставлена в /etc/obhod/dns-backup.json.'
+			exit 1
+		fi
+		uci -q delete "obhod_dns_work.$section.server"
+		for server in $servers; do uci add_list "obhod_dns_work.$section.server=$server" || exit 1; done
+		if [ -n "$old_noresolv" ]; then uci set "obhod_dns_work.$section.noresolv=$old_noresolv"; else uci -q delete "obhod_dns_work.$section.noresolv"; fi
+		if [ "$manage_cache" = 1 ]; then
+			if [ -n "$old_cache" ]; then uci set "obhod_dns_work.$section.cachesize=$old_cache"; else uci -q delete "obhod_dns_work.$section.cachesize"; fi
+		fi
+		commit_dns || exit 1
+		reload_dns && rm -f "$BACKUP"
+		;;
+	*) exit 2 ;;
+esac

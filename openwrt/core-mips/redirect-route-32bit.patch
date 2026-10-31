@@ -1,0 +1,13 @@
+diff --git a/redirect_route_linux.go b/redirect_route_linux.go
+index f73df11..be1d8d9 100644
+--- a/redirect_route_linux.go
++++ b/redirect_route_linux.go
+@@ -19,7 +19,7 @@ const redirectRouteRulePriority = 1
+ 
+ func (r *autoRedirect) setupRedirectRoutes() error {
+ 	for {
+-		r.redirectRouteTableIndex = int(rand.Uint32())
++		r.redirectRouteTableIndex = int(rand.Uint32() & 0x7fffffff)
+ 		if r.redirectRouteTableIndex == r.tunOptions.IPRoute2TableIndex {
+ 			continue
+ 		}

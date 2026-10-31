@@ -1,0 +1,128 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+set -eu
+umask 077
+export LC_ALL=C
+RUN=/var/run/obhod
+LOCK=/var/lock/obhod-core.lock
+BASE=/usr/libexec/obhod
+. "$BASE/package-lib.sh"
+die() { printf 'Ошибка: %s\n' "$*" >&2; exit 1; }
+profile=${2:-}
+case "$profile" in lite|full) ;; *) die 'Выберите lite или full.' ;; esac
+mkdir -p "$RUN"; chmod 700 "$RUN"
+case "$1" in
+	start)
+		mkdir "$LOCK" 2>/dev/null || die 'Установка ядра уже выполняется.'
+		if ! mkdir /var/lock/obhod-apply.lock 2>/dev/null; then rmdir "$LOCK"; die 'Другая операция Обхода ещё выполняется.'; fi
+		if [ -f "$RUN/ready" ] || [ "$(uci -q get obhod.main.enabled)" = 1 ]; then rmdir /var/lock/obhod-apply.lock "$LOCK"; die 'Перед сменой протоколов выключите Обход.'; fi
+		trap 'rm -f "$LOCK/pid" "$LOCK/started" "$LOCK/token"; rmdir /var/lock/obhod-apply.lock "$LOCK" 2>/dev/null' EXIT
+		token="$$-$(date +%s)"
+		printf '%s\n' "$token" > "$LOCK/token"
+		date +%s > "$LOCK/started"
+		printf 'running\n' > "$RUN/core-state"
+		printf 'Проверяем зависимости и память…\n' > "$RUN/core-message"
+		# rpcd may exit or reload while downloading. Let procd own the worker.
+		if ! (
+			set +u; . /usr/share/libubox/jshn.sh
+			json_init; json_add_string name obhod-core; json_add_object instances; json_add_object task
+			json_add_array command; json_add_string '' "$0"; json_add_string '' worker; json_add_string '' "$profile"; json_add_string '' "$token"; json_close_array
+			json_add_boolean stdout 1; json_add_boolean stderr 1; json_add_int term_timeout 15
+			json_close_object; json_close_object
+			ubus call service set "$(json_dump)" >/dev/null
+		); then
+			printf 'error\n' > "$RUN/core-state"
+			printf 'Не удалось запустить установку ядра. Повторите попытку.\n' > "$RUN/core-message"
+			die 'Не удалось запустить фоновую установку.'
+		fi
+		trap - EXIT
+		exit 0 ;;
+	worker) ;;
+	*) die 'Неизвестная операция.' ;;
+esac
+# A delayed procd launch cannot reuse a lock already recovered by status polling.
+token=${3:-}
+[ -n "$token" ] && [ "$(cat "$LOCK/token" 2>/dev/null)" = "$token" ] || exit 1
+exec > "$RUN/core-log" 2>&1
+printf '%s\n' "$$" > "$LOCK/pid"
+work=
+result=error
+message='Установка не завершилась. Проверьте состояние пакетов.'
+finish() {
+	printf '%s\n' "$message" > "$RUN/core-message"
+	printf '%s\n' "$result" > "$RUN/core-state"
+	case "$work" in /tmp/obhod-core.*) rm -rf "$work" ;; esac
+	rm -f "$LOCK/pid" "$LOCK/started" "$LOCK/token"; rmdir /var/lock/obhod-apply.lock "$LOCK"
+}
+trap finish EXIT
+trap 'exit 130' INT TERM
+die() { message=$*; printf 'Ошибка: %s\n' "$*" >&2; exit 1; }
+[ ! -f "$RUN/ready" ] || die 'Перед сменой протоколов выключите Обход.'
+for other in sing-box podkop passwall passwall2 homeproxy; do
+	if ubus call service list "{\"name\":\"$other\"}" 2>/dev/null | jsonfilter -e '@.*.instances.*.running' | grep -q true; then
+		die 'Остановите другую службу прокси перед сменой ядра.'
+	fi
+done
+if [ "$profile" = lite ] && [ -s /etc/obhod/settings.json ]; then
+	jsonfilter -i /etc/obhod/settings.json -e '@' >/dev/null || die 'Не удалось прочитать сохранённые подключения.'
+	if jsonfilter -i /etc/obhod/settings.json -e '@.profile.tunnels[*].type' | grep -qx wireguard; then
+		die 'В профиле есть WireGuard. Удалите эти подключения и сохраните профиль перед переходом на облегчённое ядро.'
+	fi
+fi
+detect_manager
+core=sing-box; [ "$profile" != lite ] || core=sing-box-tiny
+old=$(find_core)
+work=$(mktemp -d /tmp/obhod-core.XXXXXX) || die 'Не удалось создать рабочую папку.'
+planner="$BASE/installer-plan.uc"
+read_resources
+[ "$tmp_free" -ge 1024 ] || die 'В /tmp осталось менее 1 МБ.'
+if [ "$manager" = apk ]; then
+	apk update || die 'Не удалось обновить индексы APK.'
+	set -- "$core"
+	# Replace world constraints atomically. sing-box is a virtual provider of tiny.
+	if [ "$core" = sing-box ]; then set -- "$@" '!sing-box-tiny'
+	else set -- "$@" sing-box; fi
+	apk --simulate add "$@" || die 'Пакетный менеджер отклонил смену ядра. Проверьте зависимости других пакетов.'
+	resolve_sizes "$core"
+	check_budget
+	printf 'Устанавливаем %s…\n' "$core" > "$RUN/core-message"
+	apk add "$@" || die 'Установка APK не удалась. Проверьте доступность репозитория и состояние пакетов.'
+else
+	opkg update || die 'Не удалось обновить индексы opkg.'
+	if [ -n "$old" ] && [ "$old" != "$core" ]; then
+		# opkg has no atomic replacement. Cache both verified packages before removal.
+		# Do not force removal when another package depends on the current core.
+		opkg --noaction remove "$old" > "$work/remove-plan" 2>&1 || die 'Другое приложение зависит от текущего ядра.'
+		grep -q '^Removing package '"$old"' ' "$work/remove-plan" || die 'Не удалось подтвердить удаление только текущего ядра.'
+		[ "$(grep -c '^Removing package ' "$work/remove-plan")" = 1 ] || die 'Смена ядра затронет другие пакеты; операция отменена.'
+		installed_bytes=0; download_bytes=0
+		for package in "$core" "$old"; do
+			opkg_metadata "$package" > "$work/$package.info" || die 'Нет метаданных ядра.'
+			size=$(awk '$1=="Installed-Size:" {if($2>n)n=$2} END{print n+0}' "$work/$package.info")
+			download=$(awk '$1=="Size:" {if($2>n)n=$2} END{print n+0}' "$work/$package.info")
+			[ "$size" -gt 0 ] && [ "$download" -gt 0 ] || die 'Неизвестен размер ядра.'
+			installed_bytes=$((installed_bytes + size)); download_bytes=$((download_bytes + download))
+		done
+		check_budget
+		for package in "$core" "$old"; do
+			mkdir "$work/$package"
+			(cd "$work/$package" && opkg download "$package") || die 'Не удалось заранее загрузить ядро для установки и отката.'
+			set -- "$work/$package/"*.ipk
+			[ "$#" = 1 ] && [ -f "$1" ] || die 'Неоднозначный файл пакета ядра.'
+			hash=$(sha256sum "$1"); hash=${hash%% *}
+			awk -v h="$hash" '$1=="SHA256sum:" && $2==h {f=1} END {exit !f}' "$work/$package.info" || die 'Контрольная сумма ядра не совпала с подписанным индексом.'
+		done
+		printf 'Заменяем %s на %s…\n' "$old" "$core" > "$RUN/core-message"
+		opkg remove "$old" || die 'Не удалось удалить прежнее ядро; установка отменена.'
+		if ! opkg install "$work/$core/"*.ipk; then
+			opkg install "$work/$old/"*.ipk || die 'Установка и откат не удались. Проверьте пакеты через SSH.'
+			die 'Установка не удалась; прежнее ядро восстановлено.'
+		fi
+	else
+		resolve_sizes "$core"
+		check_budget
+		opkg install "$core" || die 'Не удалось установить ядро.'
+	fi
+fi
+result=done
+message='Ядро установлено. Можно сохранить настройки и включить Обход.'

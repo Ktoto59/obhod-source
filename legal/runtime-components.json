@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "components": [
+    {
+      "id": "amnezia-box-windows-amd64",
+      "name": "sing-box / amnezia-box",
+      "kind": "external-process",
+      "bundled": true,
+      "binaryPath": "windows/runtime/sing-box.exe",
+      "version": "1.14.0-rc.1-awgm.15",
+      "revision": "57276220a20679cad762c9644f6abdaf39ab7688",
+      "sha256": "00302b3785ee7f3f896df4d027707543202d082300e60719a51b21f5fc9a5917",
+      "licenseExpression": "GPL-3.0-or-later",
+      "licenseFiles": ["LICENSES/GPL-3.0-only.txt", "LICENSES/sing-box-GPL-notice.txt"],
+      "sourceRepository": "https://github.com/hoaxisr/amnezia-box",
+      "sourceUrl": "https://github.com/hoaxisr/amnezia-box/tree/57276220a20679cad762c9644f6abdaf39ab7688",
+      "sourceArchiveUrl": "https://github.com/hoaxisr/amnezia-box/archive/57276220a20679cad762c9644f6abdaf39ab7688.zip",
+      "releaseSourceName": "amnezia-box-57276220a20679cad762c9644f6abdaf39ab7688-source.zip",
+      "buildInstructions": "windows/docs/BUILDING_RUNTIME.md",
+      "sourceStatus": "verified"
+    },
+    {
+      "id": "sing-box-mipsel-24kc-compat",
+      "name": "sing-box-tiny OpenWrt MIPS compatibility build",
+      "kind": "external-process",
+      "bundled": false,
+      "version": "1.13.21-obhod.1",
+      "revision": "628cb31ffa79cffffd34c2f9cde6cae044e4fc12",
+      "sha256": "f32f26ef9171684ea10dc1b69b15fc23674af7884fbc210477239bde0db971e0",
+      "licenseExpression": "GPL-3.0-or-later",
+      "licenseFiles": ["LICENSES/GPL-3.0-only.txt", "LICENSES/sing-box-GPL-notice.txt"],
+      "sourceRepository": "https://github.com/SagerNet/sing-box",
+      "sourceUrl": "https://github.com/SagerNet/sing-box/tree/628cb31ffa79cffffd34c2f9cde6cae044e4fc12",
+      "sourceArchiveUrl": "https://github.com/Ktoto59/obhod-releases/releases/download/openwrt-core-mips-v1.13.21-obhod.1/sing-box-1.13.21-obhod.1-source.tar.gz",
+      "releaseSourceName": "sing-box-1.13.21-obhod.1-source.tar.gz",
+      "buildInstructions": "openwrt/core-mips/README.md",
+      "sourceStatus": "verified"
+    },
+    {
+      "id": "amneziawg-go",
+      "name": "AmneziaWG-Go",
+      "kind": "embedded-upstream-component",
+      "bundled": true,
+      "parentComponent": "amnezia-box-windows-amd64",
+      "version": "v3.1.0-awgm.2",
+      "revision": "ad2b1d906df4e4e0c405c5490addc7c984bc878d",
+      "licenseExpression": "MIT",
+      "licenseFiles": ["LICENSES/AmneziaWG-Go-MIT.txt"],
+      "sourceRepository": "https://github.com/hoaxisr/amneziawg-go",
+      "sourceUrl": "https://github.com/hoaxisr/amneziawg-go/tree/ad2b1d906df4e4e0c405c5490addc7c984bc878d"
+    }
+  ]
+}

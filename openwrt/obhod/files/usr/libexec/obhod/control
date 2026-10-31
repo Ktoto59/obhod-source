@@ -1,0 +1,83 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+umask 077
+. /usr/share/libubox/jshn.sh
+
+STATE=/etc/obhod/settings.json
+RUN=/var/run/obhod
+
+error() {
+	printf '%s\n' "$1" > "$RUN/error"
+	logger -t obhod "$1"
+	return 1
+}
+
+prepare() {
+	mkdir -p "$RUN" /etc/obhod
+	chmod 700 "$RUN" /etc/obhod
+	rm -f "$RUN/ready" "$RUN/error"
+	[ -s "$STATE" ] || { error 'Сначала добавьте подключение в LuCI.'; return 1; }
+	# 1.12 is required for modern DNS, WireGuard endpoints and AnyTLS.
+	version=$(/usr/bin/sing-box version 2>/dev/null | head -n 1 | sed -n 's/.*version \([0-9][0-9]*\)\.\([0-9][0-9]*\).*/\1 \2/p')
+	set -- $version
+	[ "$#" -eq 2 ] && { [ "$1" -gt 1 ] || { [ "$1" -eq 1 ] && [ "$2" -ge 12 ]; }; } || {
+		error 'Требуется sing-box или sing-box-tiny версии 1.12 или новее. Выберите протоколы в LuCI.'; return 1;
+	}
+	# Do not create competing transparent routing tables alongside another manager.
+	for other in sing-box podkop passwall passwall2 homeproxy; do
+		if ubus call service list "{\"name\":\"$other\"}" 2>/dev/null | jsonfilter -e '@.*.instances.*.running' | grep -q true; then
+			error 'Остановите другую службу прокси перед запуском Обхода.'; return 1
+		fi
+	done
+	if [ ! -s "$RUN/controller-secret" ]; then
+		cat /proc/sys/kernel/random/uuid > "$RUN/controller-secret" || return 1
+		chmod 600 "$RUN/controller-secret"
+	fi
+	ucode /usr/libexec/obhod/prepare.uc || { error 'Не удалось подготовить конфигурацию службы.'; return 1; }
+	/usr/bin/sing-box check -c "$RUN/config.json" >/dev/null 2>&1 || {
+		error 'Ядро отклонило конфигурацию. Проверьте версию и поддерживаемые протоколы.'; return 1;
+	}
+}
+
+ready() {
+	count=0
+	while [ "$count" -lt 15 ]; do
+		[ -f "$RUN/ready" ] && return 0
+		sleep 1
+		count=$((count + 1))
+	done
+	return 1
+}
+
+set_enabled() {
+	uci set "obhod.main.enabled=$1" && uci commit obhod
+}
+
+stop_and_wait() {
+	pid=$(cat "$RUN/run-pid" 2>/dev/null)
+	[ -n "$pid" ] || pid=$(ubus call service list '{"name":"obhod"}' 2>/dev/null | jsonfilter -e '@.obhod.instances.main.pid')
+	/etc/init.d/obhod stop >/dev/null 2>&1 || return 1
+	case "$pid" in ''|*[!0-9]*) return 0 ;; esac
+	count=0
+	while kill -0 "$pid" 2>/dev/null; do
+		[ "$count" -lt 20 ] || { error 'Прежний процесс ещё завершается. Повторите включение через несколько секунд.'; return 1; }
+		sleep 1; count=$((count + 1))
+	done
+}
+
+case "$1" in
+	prepare) prepare ;;
+	ready) ready ;;
+	start)
+		stop_and_wait || exit 1
+		set_enabled 1 || exit 1
+		/etc/init.d/obhod start >/dev/null 2>&1 && ready && exit 0
+		stop_and_wait
+		set_enabled 0
+		exit 1
+		;;
+	stop)
+		set_enabled 0 && stop_and_wait
+		;;
+	*) exit 2 ;;
+esac

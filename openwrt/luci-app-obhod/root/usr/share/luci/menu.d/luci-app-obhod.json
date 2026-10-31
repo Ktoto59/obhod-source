@@ -1,0 +1,8 @@
+{
+  "admin/services/obhod": {
+    "title": "Обход",
+    "order": 60,
+    "action": { "type": "view", "path": "obhod/overview" },
+    "depends": { "acl": [ "luci-app-obhod" ] }
+  }
+}

@@ -1,0 +1,48 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+umask 077
+RUN=/var/run/obhod
+child=
+monitor=
+log_pid=
+printf '%s\n' "$$" > "$RUN/run-pid"
+cleanup() {
+	rm -f "$RUN/ready"
+	[ -z "$monitor" ] || kill "$monitor" 2>/dev/null
+	/usr/libexec/obhod/dns restore
+	[ -z "$child" ] || { kill "$child" 2>/dev/null; wait "$child" 2>/dev/null; }
+	[ -z "$log_pid" ] || wait "$log_pid" 2>/dev/null
+	[ -z "$monitor" ] || wait "$monitor" 2>/dev/null
+	rm -f "$RUN/log.pipe"
+	[ "$(cat "$RUN/run-pid" 2>/dev/null)" != "$$" ] || rm -f "$RUN/run-pid"
+}
+trap cleanup EXIT
+trap 'exit 143' TERM INT
+
+rm -f "$RUN/log.pipe" "$RUN/telemetry.json"
+mkfifo -m 600 "$RUN/log.pipe" || exit 1
+ucode /usr/libexec/obhod/log.uc < "$RUN/log.pipe" &
+log_pid=$!
+/usr/bin/sing-box run -c "$RUN/config.json" > "$RUN/log.pipe" 2>&1 &
+child=$!
+attempt=0
+while [ "$attempt" -lt 10 ]; do
+	sleep 1
+	kill -0 "$child" 2>/dev/null || exit 1
+	# The DNS listener must be accepting connections before dnsmasq is changed.
+	grep -q '0100007F:041D .* 0A ' /proc/net/tcp && break
+	attempt=$((attempt + 1))
+done
+[ "$attempt" -lt 10 ] || exit 1
+if [ "$(jsonfilter -i /etc/obhod/settings.json -e '@.options.manageDns')" = true ]; then
+	/usr/libexec/obhod/dns apply || {
+		printf '%s\n' 'Не удалось настроить DNS. Проверьте dnsmasq и сохранённую копию DNS.' > "$RUN/error"
+		exit 1
+	}
+fi
+touch "$RUN/ready"
+/usr/libexec/obhod/monitor "$child" &
+monitor=$!
+wait "$child"
+result=$?
+exit "$result"

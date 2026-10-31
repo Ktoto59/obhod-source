@@ -1,0 +1,67 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+set -eu
+umask 077
+RUN=/var/run/obhod
+LOCK=/var/lock/obhod-job.lock
+action=${2:-}
+case "$action" in start|stop|diagnostics) ;; *) echo 'Недопустимая операция.' >&2; exit 1 ;; esac
+mkdir -p "$RUN"; chmod 700 "$RUN"
+if [ "$1" = start ]; then
+    mkdir "$LOCK" 2>/dev/null || { echo 'Проверка или переключение службы уже выполняется.' >&2; exit 1; }
+    if ! mkdir /var/lock/obhod-apply.lock 2>/dev/null; then rmdir "$LOCK"; echo 'Другая операция Обхода ещё выполняется.' >&2; exit 1; fi
+    trap 'rmdir /var/lock/obhod-apply.lock "$LOCK" 2>/dev/null' EXIT
+    printf '%s\n' "$action" > "$RUN/job-action"
+    printf 'running\n' > "$RUN/job-state"
+    printf 'Выполняем операцию…\n' > "$RUN/job-message"
+    (
+        set +u; . /usr/share/libubox/jshn.sh
+        json_init; json_add_string name obhod-job; json_add_object instances; json_add_object task
+        json_add_array command; json_add_string '' /usr/libexec/obhod/job; json_add_string '' worker; json_add_string '' "$action"; json_close_array
+        json_add_boolean stdout 1; json_add_boolean stderr 1
+        json_close_object; json_close_object
+        ubus call service set "$(json_dump)" >/dev/null
+    ) || exit 1
+    trap - EXIT; exit 0
+fi
+[ "$1" = worker ] || exit 1
+printf '%s\n' "$$" > "$LOCK/pid"
+result=error
+message='Операция прервана. Проверьте журнал службы.'
+work=
+finish() {
+    printf '%s\n' "$message" > "$RUN/job-message"
+    printf '%s\n' "$result" > "$RUN/job-state"
+    [ -z "$work" ] || rm -rf "$work"
+    rm -f "$LOCK/pid"; rmdir /var/lock/obhod-apply.lock "$LOCK" 2>/dev/null || true
+}
+trap finish EXIT
+trap 'exit 130' INT TERM
+if [ "$action" = start ] || [ "$action" = stop ]; then
+    if /usr/libexec/obhod/control "$action" > "$RUN/control-log" 2>&1; then
+        result=done; message='Состояние службы изменено.'
+    else message=$(cat "$RUN/error" 2>/dev/null || echo 'Не удалось переключить службу. Проверьте журнал.'); fi
+    exit 0
+fi
+work=$(mktemp -d "$RUN/diagnostics.XXXXXX")
+printf 'Проверяем конфигурацию, DNS и выбранный маршрут…\n' > "$RUN/job-message"
+jsonfilter -i /etc/obhod/settings.json -e '@.config' > "$work/config" 2>/dev/null || true
+if /usr/bin/sing-box check -c "$work/config" >/dev/null 2>&1; then touch "$work/config-ok"; fi
+if [ -f "$RUN/ready" ]; then
+    nft list table inet sing-box >/dev/null 2>&1 && touch "$work/firewall-ok" || true
+    nslookup -timeout=3 example.org 127.0.0.1 > "$work/dns" 2>/dev/null &
+    child=$!
+    (sleep 5; kill "$child" 2>/dev/null) & timer=$!
+    if wait "$child"; then touch "$work/dns-ok"; fi
+    kill "$timer" 2>/dev/null || true; wait "$timer" 2>/dev/null || true
+        nslookup -timeout=3 fakeip-check.obhod.example.com 127.0.0.1 > "$work/fakeip" 2>/dev/null &
+        child=$!
+        (sleep 5; kill "$child" 2>/dev/null) & timer=$!
+        if wait "$child" && grep -Eq '198\.(18|19)\.[0-9]+\.[0-9]+' "$work/fakeip"; then touch "$work/fakeip-ok"; fi
+        kill "$timer" 2>/dev/null || true; wait "$timer" 2>/dev/null || true
+    /usr/libexec/obhod/monitor once || true
+fi
+ucode /usr/libexec/obhod/diagnostics.uc "$work" > "$work/result"
+mv "$work/result" "$RUN/diagnostics.json"
+result=done
+message='Диагностика завершена. Результаты показаны ниже.'

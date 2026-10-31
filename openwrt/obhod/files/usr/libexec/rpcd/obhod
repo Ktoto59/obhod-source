@@ -1,0 +1,231 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+umask 077
+. /usr/share/libubox/jshn.sh
+STATE=/etc/obhod/settings.json
+RUN=/var/run/obhod
+CONTROL=/usr/libexec/obhod/control
+
+reply() {
+	json_init
+	json_add_boolean ok "$1"
+	[ -z "$2" ] || json_add_string error "$2"
+	json_dump
+}
+
+worker_alive() {
+	kill -0 "$1" 2>/dev/null || return 1
+	# kill -0 also succeeds for a zombie whose EXIT cleanup never ran.
+	if [ -r "/proc/$1/stat" ]; then
+		record=$(cat "/proc/$1/stat") || return 1
+		record=${record##*) }
+		[ "${record%% *}" != Z ] || return 1
+	fi
+	return 0
+}
+
+[ "$1" = list ] && {
+	printf '%s\n' '{"status":{},"upload":{"action":"string","upload":"string","data":"string","index":0},"apply":{"settings":"string","start":true,"upload":"string"},"start":{},"stop":{},"subscription":{"url":"string"},"installCore":{"profile":"string"},"coreSizes":{},"update":{"action":"string"},"interfaces":{},"logs":{},"clearLogs":{},"diagnostics":{},"service":{"action":"string"},"diagnose":{}}'
+	exit 0
+}
+[ "$1" = call ] || exit 1
+mkdir -p "$RUN" /etc/obhod
+chmod 700 "$RUN" /etc/obhod
+request=$(mktemp "$RUN/request.XXXXXX") || exit 1
+trap 'rm -f "$request"' EXIT
+cat > "$request"
+[ "$(wc -c < "$request")" -le 262144 ] || { reply 0 'Запрос слишком большой.'; exit 0; }
+jsonfilter -i "$request" -e '@' >/dev/null 2>&1 || { reply 0 'Некорректный запрос.'; exit 0; }
+
+case "$2" in
+	upload)
+		ucode /usr/libexec/obhod/upload.uc "$request"
+		;;
+	status)
+		if [ -s /var/lock/obhod-job.lock/pid ]; then
+			pid=$(cat /var/lock/obhod-job.lock/pid)
+			case "$pid" in ''|*[!0-9]*) ;; *)
+				if ! worker_alive "$pid"; then
+					printf 'error\n' > "$RUN/job-state"
+					printf 'Операция прервана. Проверьте состояние службы и повторите попытку.\n' > "$RUN/job-message"
+					rm -f /var/lock/obhod-job.lock/pid
+					rmdir /var/lock/obhod-apply.lock /var/lock/obhod-job.lock 2>/dev/null
+				fi ;;
+			esac
+		fi
+		# An OOM-killed worker cannot run its EXIT trap. Release only our own
+		# operation locks so the user can retry from LuCI without rebooting.
+		if [ -d /var/lock/obhod-core.lock ]; then
+			pid=$(cat /var/lock/obhod-core.lock/pid 2>/dev/null)
+			stale=0
+			case "$pid" in ''|*[!0-9]*)
+				# Give procd time to start the worker; old empty locks get one grace period.
+				started=$(cat /var/lock/obhod-core.lock/started 2>/dev/null)
+				case "$started" in ''|*[!0-9]*) date +%s > /var/lock/obhod-core.lock/started ;;
+					*) [ "$(( $(date +%s) - started ))" -le 30 ] || stale=1 ;; esac ;;
+				*) worker_alive "$pid" || stale=1 ;; esac
+			# A package-manager child may outlive its parent. Let it finish first.
+			if [ "$stale" = 1 ] && ! pidof apk opkg >/dev/null 2>&1; then
+					printf 'error\n' > "$RUN/core-state"
+					printf 'Процесс установки прерван. Проверьте память и состояние пакетов; можно повторить установку.\n' > "$RUN/core-message"
+					rm -f /var/lock/obhod-core.lock/pid /var/lock/obhod-core.lock/started /var/lock/obhod-core.lock/token
+					rmdir /var/lock/obhod-apply.lock /var/lock/obhod-core.lock 2>/dev/null
+			fi
+		fi
+		. /usr/libexec/obhod/package-lib.sh
+		manager=opkg; [ ! -f /etc/apk/world ] || manager=apk
+		# Loading a 35 MB Go binary on every poll is expensive on small routers.
+		# BusyBox stat is not enabled in every router image; ls is always present.
+		core_key=$(ls -ln /usr/bin/sing-box 2>/dev/null)
+		if [ -n "$core_key" ] && [ "$core_key" != "$(cat "$RUN/core-version-key" 2>/dev/null)" ]; then
+			cache=$(mktemp "$RUN/core-version.XXXXXX")
+			if /usr/bin/sing-box version > "$cache" 2>/dev/null; then
+				mv "$cache" "$RUN/core-version"; printf '%s\n' "$core_key" > "$RUN/core-version-key"
+			else rm -f "$cache"; fi
+		fi
+		core_version=
+		[ -z "$core_key" ] || core_version=$(cat "$RUN/core-version" 2>/dev/null)
+		json_init
+		json_add_boolean running "$([ -f "$RUN/ready" ] && echo 1 || echo 0)"
+		json_add_boolean enabled "$(uci -q get obhod.main.enabled || echo 0)"
+		json_add_boolean configured "$([ -s "$STATE" ] && echo 1 || echo 0)"
+		json_add_string version "$(printf '%s\n' "$core_version" | head -n 1)"
+		json_add_string coreFlavor "$(find_core)"
+		json_add_boolean wireguard "$(printf '%s' "$core_version" | grep -q with_wireguard && echo 1 || echo 0)"
+		json_add_boolean coreBusy "$([ -d /var/lock/obhod-core.lock ] && echo 1 || echo 0)"
+		json_add_string coreState "$(cat "$RUN/core-state" 2>/dev/null)"
+		json_add_string coreMessage "$(cat "$RUN/core-message" 2>/dev/null)"
+		app_version=$(cat /usr/share/obhod/version 2>/dev/null)
+		available_version=$(jsonfilter -i "$RUN/update-release.json" -e '@.version' 2>/dev/null)
+		json_add_string obhodVersion "$app_version"
+		json_add_boolean updateBusy "$([ -d /var/lock/obhod-update.lock ] && echo 1 || echo 0)"
+		json_add_string updateState "$(cat "$RUN/update-state" 2>/dev/null)"
+		json_add_string updateMessage "$(cat "$RUN/update-message" 2>/dev/null)"
+		json_add_string availableVersion "$available_version"
+		json_add_boolean updateAvailable "$(if [ "$available_version" != "$app_version" ] && jsonfilter -i "$RUN/update-release.json" -e '@.available' 2>/dev/null | grep -qx true; then echo 1; else echo 0; fi)"
+		json_add_string error "$(cat "$RUN/error" 2>/dev/null)"
+		json_add_boolean jobBusy "$([ -d /var/lock/obhod-job.lock ] && echo 1 || echo 0)"
+		json_add_string jobState "$(cat "$RUN/job-state" 2>/dev/null)"
+		json_add_string jobAction "$(cat "$RUN/job-action" 2>/dev/null)"
+		json_add_string jobMessage "$(cat "$RUN/job-message" 2>/dev/null)"
+		json_add_string routeName "$(jsonfilter -i "$RUN/telemetry.json" -e '@.name' 2>/dev/null)"
+		json_add_string routeDelay "$(jsonfilter -i "$RUN/telemetry.json" -e '@.delay' 2>/dev/null)"
+		json_add_string routeCheckedAt "$(jsonfilter -i "$RUN/telemetry.json" -e '@.checkedAt' 2>/dev/null)"
+		json_add_boolean routeOk "$(jsonfilter -i "$RUN/telemetry.json" -e '@.ok' 2>/dev/null | grep -qx true && echo 1 || echo 0)"
+		json_dump
+		;;
+	coreSizes)
+		. /usr/libexec/obhod/package-lib.sh
+		data=$(mktemp "$RUN/core-sizes.XXXXXX") || exit 1
+		manager=opkg
+		if [ -f /etc/apk/world ]; then
+			manager=apk
+			apk --no-network query --format json --fields name,version,installed-size,file-size 'sing-box*' > "$data" 2>/dev/null || printf '[]\n' > "$data"
+		else
+			{ opkg_metadata sing-box-tiny; opkg_metadata sing-box; } > "$data"
+		fi
+		ucode /usr/libexec/obhod/core-sizes.uc "$manager" "$data"
+		rm -f "$data"
+		;;
+	interfaces)
+		data=$(mktemp "$RUN/interfaces.XXXXXX")
+		ubus -t 3 call network.interface dump > "$data" 2>/dev/null || printf '{}\n' > "$data"
+		ucode /usr/libexec/obhod/inspect.uc interfaces "$data"
+		rm -f "$data"
+		;;
+	logs)
+		ucode -e 'import {readfile} from "fs"; printf("%J\n", {text: readfile("/var/run/obhod/service.log", 32768) || ""});'
+		;;
+	clearLogs) : > "$RUN/service.log"; reply 1 ;;
+	diagnostics)
+		if [ -s "$RUN/diagnostics.json" ]; then cat "$RUN/diagnostics.json"; else printf '{"checks":[]}\n'; fi
+		;;
+	service|diagnose)
+		if [ "$2" = diagnose ]; then action=diagnostics
+		else action=$(jsonfilter -i "$request" -e '@.action' 2>/dev/null); case "$action" in start|stop) ;; *) reply 0 'Недопустимое действие службы.'; exit 0 ;; esac; fi
+		if message=$(/usr/libexec/obhod/job start "$action" 2>&1); then reply 1
+		else reply 0 "$message"; fi
+		;;
+	update)
+		action=$(jsonfilter -i "$request" -e '@.action' 2>/dev/null)
+		case "$action" in check|install) ;; *) reply 0 'Недопустимая операция обновления.'; exit 0 ;; esac
+		if message=$(/usr/libexec/obhod/update start "$action" 2>&1); then reply 1
+		else reply 0 "$message"; fi
+		;;
+	installCore)
+		profile=$(jsonfilter -i "$request" -e '@.profile' 2>/dev/null)
+		case "$profile" in lite|full) ;; *) reply 0 'Выберите допустимый набор протоколов.'; exit 0 ;; esac
+		if message=$(/usr/libexec/obhod/core-install start "$profile" 2>&1); then reply 1
+		else reply 0 "$message"; fi
+		;;
+	subscription)
+		url=$(jsonfilter -i "$request" -e '@.url' 2>/dev/null)
+		[ "${#url}" -le 4096 ] || { reply 0 'URL слишком длинный.'; exit 0; }
+		case "$url" in http://*|https://*) ;; *) reply 0 'URL должен начинаться с http:// или https://.'; exit 0 ;; esac
+		file=$(mktemp "$RUN/subscription.XXXXXX") || exit 1
+		trap 'rm -f "$request" "$file"' EXIT
+		# Both a time limit and a file limit apply, including chunked responses.
+		{ (ulimit -c 0; ulimit -f 256
+			if command -v curl >/dev/null 2>&1; then
+				curl --fail --silent --location --proto '=http,https' --proto-redir '=http,https' --max-time 12 --max-filesize 131072 --user-agent 'v2rayN/Obhod' --output "$file" -- "$url"
+			else
+				uclient-fetch -q -T 12 -U 'v2rayN/Obhod' -O "$file" "$url"
+			fi
+		); fetch_result=$?; [ "$fetch_result" = 0 ]; } 2>/dev/null || {
+			reply 0 'Не удалось загрузить подписку: проверьте URL, размер и доступность сервера.'; exit 0;
+		}
+		[ "$(wc -c < "$file")" -le 131072 ] || { reply 0 'Подписка больше 128 КБ.'; exit 0; }
+		# Do not export large text through jshn's environment (Linux limits each
+		# argument/environment entry). Base64 can be streamed safely as JSON.
+		ucode -e 'import { readfile } from "fs"; printf("{\"ok\":true,\"base64\":\"%s\"}\n", b64enc(readfile(ARGV[0])));' "$file"
+		;;
+	apply|start|stop)
+		# Serialize configuration writes and start/stop operations from all sessions.
+		mkdir /var/lock/obhod-apply.lock 2>/dev/null || { reply 0 'Другая операция ещё выполняется.'; exit 0; }
+		candidate=
+		previous=
+		trap 'rm -f "$request" "$candidate" "$previous"; rmdir /var/lock/obhod-apply.lock 2>/dev/null' EXIT
+		if [ "$2" = stop ]; then
+			"$CONTROL" stop && reply 1 || reply 0 'Не удалось остановить службу или восстановить DNS.'
+			exit 0
+		fi
+		if [ "$2" = start ]; then
+			"$CONTROL" start && reply 1 || reply 0 'Запуск не удался. Проверьте конфигурацию и состояние службы.'
+			exit 0
+		fi
+		requested_start=$(jsonfilter -i "$request" -e '@.start' 2>/dev/null)
+		candidate=$(mktemp /etc/obhod/settings.XXXXXX) || exit 1
+		upload=$(jsonfilter -i "$request" -e '@.upload' 2>/dev/null)
+		if [ -n "$upload" ]; then
+			printf '%s' "$upload" | grep -Eq '^[a-f0-9-]{36}$' || { reply 0 'Недопустимая загрузка.'; exit 0; }
+			directory="$RUN/upload-$upload"
+			[ -s "$directory/meta" ] && [ -s "$directory/data" ] || { reply 0 'Загрузка истекла. Сохраните настройки ещё раз.'; exit 0; }
+			mv "$directory/data" "$candidate" || { reply 0 'Не удалось прочитать загруженный профиль.'; exit 0; }
+			rm -f "$directory/meta"; rmdir "$directory"
+		else
+			jsonfilter -i "$request" -e '@.settings' > "$candidate" 2>/dev/null || { reply 0 'Некорректные настройки.'; exit 0; }
+		fi
+		[ "$(wc -c < "$candidate")" -le 196608 ] || { reply 0 'Настройки больше 192 КБ.'; exit 0; }
+		schema=$(jsonfilter -i "$candidate" -e '@.version' 2>/dev/null)
+		profile_version=$(jsonfilter -i "$candidate" -e '@.profile.version' 2>/dev/null)
+		[ "$schema" = 1 ] && [ "$profile_version" = 6 ] || { reply 0 'Неподдерживаемый формат настроек.'; exit 0; }
+		jsonfilter -i "$candidate" -e '@.config' > "$RUN/check.json" 2>/dev/null
+		/usr/bin/sing-box check -c "$RUN/check.json" >/dev/null 2>&1 || { rm -f "$RUN/check.json"; reply 0 'Ядро отклонило конфигурацию; прежние настройки сохранены.'; exit 0; }
+		rm -f "$RUN/check.json"
+		was_running=0
+		[ ! -f "$RUN/ready" ] || was_running=1
+		old_enabled=$(uci -q get obhod.main.enabled || echo 0)
+		if [ -f "$STATE" ]; then previous=$(mktemp /etc/obhod/previous.XXXXXX); cp "$STATE" "$previous" || exit 1; fi
+		mv "$candidate" "$STATE" || { reply 0 'Не удалось сохранить настройки.'; exit 0; }
+		if [ "$requested_start" = true ] || [ "$was_running" = 1 ]; then
+			if ! "$CONTROL" start; then
+				if [ -n "$previous" ]; then mv "$previous" "$STATE"; else rm -f "$STATE"; fi
+				uci set "obhod.main.enabled=$old_enabled"; uci commit obhod
+				[ "$was_running" = 0 ] || "$CONTROL" start
+				reply 0 'Запуск не удался; предыдущие настройки возвращены.'; exit 0
+			fi
+		fi
+		reply 1
+		;;
+	*) reply 0 'Неизвестная операция.' ;;
+esac
