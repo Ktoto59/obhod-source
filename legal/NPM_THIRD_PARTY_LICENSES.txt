@@ -381,7 +381,7 @@ IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 ==============================================================================
 
-js-yaml@4.3.0 — MIT
+js-yaml@4.3.2 — MIT
 
 (The MIT License)
 
