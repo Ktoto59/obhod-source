@@ -18,7 +18,7 @@ while (queue.length) {
   const packageDirectory = path.join(root, key);
   const licenseName = fs.readdirSync(packageDirectory).find((file) => /^(licen[cs]e|copying)(\..*)?$/i.test(file));
   const licenseText = licenseName
-    ? fs.readFileSync(path.join(packageDirectory, licenseName), 'utf8').trim()
+    ? fs.readFileSync(path.join(packageDirectory, licenseName), 'utf8').replace(/\r\n/g, '\n').trim()
     : `License expression: ${pkg.license || 'not declared'}`;
   packages.push({ name: key.split('node_modules/').pop(), version: pkg.version, license: pkg.license, licenseText });
   for (const dependency of Object.keys(pkg.dependencies || {})) {
@@ -38,7 +38,7 @@ const output = [
 const target = path.join(root, 'legal', 'NPM_THIRD_PARTY_LICENSES.txt');
 
 if (process.argv.includes('--check')) {
-  if (!fs.existsSync(target) || fs.readFileSync(target, 'utf8') !== output) {
+  if (!fs.existsSync(target) || fs.readFileSync(target, 'utf8').replace(/\r\n/g, '\n') !== output) {
     console.error('legal/NPM_THIRD_PARTY_LICENSES.txt is stale. Run npm run licenses:update.');
     process.exit(1);
   }
