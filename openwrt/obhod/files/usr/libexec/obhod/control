@@ -34,6 +34,14 @@ prepare() {
 		chmod 600 "$RUN/controller-secret"
 	fi
 	ucode /usr/libexec/obhod/prepare.uc || { error 'Не удалось подготовить конфигурацию службы.'; return 1; }
+	ucode /usr/libexec/obhod/dns-pool-config.uc || { error 'Не удалось подготовить группу DNS. Проверьте список серверов в LuCI.'; return 1; }
+	for pool in direct proxy bootstrap; do
+		file="$RUN/dns-pool-$pool.json"
+		[ -s "$file" ] || continue
+		ucode /usr/libexec/obhod/dns-pool.uc "$file" --check >/dev/null 2>&1 || {
+			error 'Не удалось запустить группу DNS. Проверьте пакет ucode-mod-socket и настройки.'; return 1;
+		}
+	done
 	/usr/bin/sing-box check -c "$RUN/config.json" >/dev/null 2>&1 || {
 		error 'Ядро отклонило конфигурацию. Проверьте версию и поддерживаемые протоколы.'; return 1;
 	}

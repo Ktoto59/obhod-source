@@ -150,6 +150,22 @@ return view.extend({
       if (self.dnsServer.value === (protocol==='https'?preset.https[0]:protocol==='tls'?preset.tls:preset.plain) && self.dnsBootstrap.value===preset.bootstrap) self.dnsPreset.value=id;
     });
     this.dnsPathField = field('Путь DNS over HTTPS', this.dnsPath, 'Обычно /dns-query.');
+    this.dnsPoolMode = E('select',{change:function(){self.updateDnsFields();}},[
+      E('option',{value:'single'},'Один сервер'), E('option',{value:'parallel'},'Параллельный опрос · первый ответ'),
+      E('option',{value:'balanced'},'Автоматический выбор · меньше запросов')]);
+    this.dnsPoolMode.value = this.options.dnsPoolMode || 'single';
+    var dnsValue = routing.dnsServer || 'one.one.one.one';
+    var dnsHost = dnsValue.includes(':') ? '['+dnsValue+']' : dnsValue;
+    var currentDns = (routing.dnsProtocol || 'tls')+'://'+dnsHost+((routing.dnsProtocol==='https')?(routing.dnsPath||'/dns-query'):'');
+    this.dnsUpstreams = E('textarea',{rows:4,spellcheck:'false',autocomplete:'off',placeholder:'https://1.1.1.1/dns-query\nhttps://1.0.0.1/dns-query'});
+    this.dnsUpstreams.value = Array.isArray(this.options.dnsUpstreams) ? this.options.dnsUpstreams.join('\n') : this.options.dnsUpstreams || currentDns;
+    this.dnsBootstrapServers = E('textarea',{rows:2,spellcheck:'false',placeholder:'1.1.1.1\n8.8.8.8'});
+    this.dnsBootstrapServers.value = Array.isArray(this.options.dnsBootstrapServers) ? this.options.dnsBootstrapServers.join('\n') : this.options.dnsBootstrapServers || routing.dnsBootstrap || '1.1.1.1';
+    this.dnsPrepareButton = E('button',{type:'button','class':'cbi-button ob-button',click:ui.createHandlerFn(this,function(){
+      if(self.lastStatus.coreBusy || self.lastStatus.updateBusy || self.lastStatus.jobBusy)return Promise.resolve();
+      return self.operation(function(){return service('dns-prepare');});
+    })},'Подготовить DNS-группы');
+    this.dnsPrepareHint = E('p',{'class':'ob-help'});
     this.verboseLogs = checkbox(routing.enableDiagnostics);
     this.diagnosticRows = E('div',{'class':'ob-diagnostic-rows'});
     this.diagnosticMessage = E('p',{'class':'ob-help','aria-live':'polite'},'Проверка использует сохранённые настройки.');
@@ -263,7 +279,11 @@ return view.extend({
       field('Набор протоколов', this.protocols), this.protocolHelp, this.coreButton, this.coreHint,
       E('details', { 'class': 'ob-details' }, [E('summary', {}, 'О размере установки'), E('p', { 'class': 'ob-help' }, 'Прокси используют sing-box-tiny, WireGuard — полный sing-box. Протоколы входят в общее ядро: выбор одного не уменьшает его дальше. Перед установкой проверяется место; малый объём ОЗУ вызывает предупреждение.')]) ]));
     this.panels.network.appendChild(card('Локальная сеть', 'Выберите входящие LAN/guest-интерфейсы. WAN обычно добавлять не нужно.', [field('Интерфейсы роутера',this.interfaceSelect),field('Выбранные устройства / ручной ввод', this.interfaces, 'Обычно br-lan. Несколько имён укажите через запятую.')]));
-    this.dnsSettings = E('div',{'class':'ob-grid ob-dns-settings'},[field('Провайдер',this.dnsPreset),field('Протокол',this.dnsProtocol),field('DNS-сервер',this.dnsServer),field('Bootstrap IPv4',this.dnsBootstrap),this.dnsPathField]);
+    this.dnsSingleFields = E('div',{'class':'ob-grid'},[field('Провайдер',this.dnsPreset),field('Протокол',this.dnsProtocol),field('DNS-сервер',this.dnsServer),field('Bootstrap IPv4',this.dnsBootstrap),this.dnsPathField]);
+    this.dnsPoolFields = E('div',{},[field('DNS-серверы группы',this.dnsUpstreams,'От двух до четырёх серверов, по одному в строке: IP, udp://, tcp://, tls:// или https:// с путём DoH.'),
+      E('p',{'class':'ob-note'},'В параллельном режиме запрос получают все серверы, возвращается первый ответ. Выбирайте серверы с одинаковой фильтрацией.'),
+      field('Bootstrap DNS',this.dnsBootstrapServers,'До четырёх IP-адресов, по одному в строке. Разрешают имена DNS-серверов, серверов туннелей и узлов загрузки списков. При нескольких адресах используется тот же режим опроса.'),this.dnsPrepareButton,this.dnsPrepareHint]);
+    this.dnsSettings = E('div',{'class':'ob-dns-settings'},[field('Режим опроса DNS',this.dnsPoolMode),this.dnsSingleFields,this.dnsPoolFields]);
     this.dnsTtlField = field('TTL выбранных доменов, секунд',this.dnsTtl,'Обычно 60. После перезагрузки роутера старые служебные адреса в кэше устройств должны истечь.');
     this.panels.network.appendChild(card(this.dnsHeading, 'Роутер отвечает на DNS-запросы устройств локальной сети.', [this.dnsHint,switchField(this.dnsSwitchCaption,this.dnsEnabled,this.dnsSwitchHelp),
       this.dnsSettings,this.dnsTtlField,
@@ -338,6 +358,9 @@ return view.extend({
   updateControls: function() {
     if (!this.lastStatus) return;
     var state = this.lastStatus, busy = !!(state.updateBusy || state.coreBusy || state.jobBusy);
+    this.dnsPrepareButton.hidden = state.dnsPoolReady === true;
+    this.dnsPrepareButton.disabled = busy;
+    this.dnsPrepareHint.textContent = state.dnsPoolReady ? 'DNS-группы готовы к работе.' : 'Для групп один раз установите небольшой дополнительный компонент из репозитория OpenWrt.';
     this.operationNotice.hidden=!busy;
     this.operationTitle.textContent=state.coreBusy?'Установка ядра протоколов':state.updateBusy?'Обновление Обхода':'Операция службы';
     this.operationMessage.textContent=((state.coreBusy?state.coreMessage:state.updateBusy?state.updateMessage:state.jobMessage) || 'Выполняется операция…')
@@ -408,9 +431,11 @@ return view.extend({
     var enabled = checked(this.dnsEnabled);
     this.dnsHeading.textContent='DNS и маршрутизация FakeIP';
     this.dnsSwitchCaption.textContent='Настроить общий DNS';
-    this.dnsSwitchHelp.textContent='Этот сервер используется для обычных доменов. По умолчанию — UDP 1.1.1.1.';
+    this.dnsSwitchHelp.textContent=this.dnsPoolMode.value==='single'?'Этот сервер используется для обычных доменов. По умолчанию — UDP 1.1.1.1.':'Для обычных доменов используется группа DNS. DNS выбранных сайтов сохраняет маршрут через туннель.';
     this.dnsHint.textContent='Выбранным доменам выдаются служебные IP. Обычные сайты получают реальные адреса и идут напрямую. Устройства должны использовать DNS роутера; соответствия хранятся в /tmp.';
-    [this.dnsPreset,this.dnsProtocol,this.dnsServer,this.dnsBootstrap,this.dnsPath].forEach(function(input){input.disabled=!enabled;});
+    [this.dnsPreset,this.dnsProtocol,this.dnsServer,this.dnsBootstrap,this.dnsPath,this.dnsPoolMode,this.dnsUpstreams,this.dnsBootstrapServers].forEach(function(input){input.disabled=!enabled;});
+    this.dnsSingleFields.hidden = this.dnsPoolMode.value !== 'single';
+    this.dnsPoolFields.hidden = this.dnsPoolMode.value === 'single';
     this.dnsTtl.disabled=false;this.dnsTtlField.hidden=false;
     this.dnsSettings.hidden = !enabled;
     this.dnsPathField.hidden = this.dnsProtocol.value !== 'https';
@@ -522,7 +547,7 @@ return view.extend({
     var self=this;
     this.savedDraft=JSON.parse(JSON.stringify({profile:this.profile,options:this.options}));
     this.savedFields={};
-    ['active','group','interval','tolerance','testUrl','listInterval','downloadLists','dnsEnabled','dnsPreset','dnsProtocol','dnsServer','dnsBootstrap','dnsPath','dnsTtl','verboseLogs','domainText','cidrText','remoteText','interfaces','manageDns','ipv6','disableQuic'].forEach(function(key){
+    ['active','group','interval','tolerance','testUrl','listInterval','downloadLists','dnsEnabled','dnsPreset','dnsProtocol','dnsServer','dnsBootstrap','dnsPath','dnsPoolMode','dnsUpstreams','dnsBootstrapServers','dnsTtl','verboseLogs','domainText','cidrText','remoteText','interfaces','manageDns','ipv6','disableQuic'].forEach(function(key){
       self.savedFields[key]={value:self[key].value,checked:self[key].checked};
     });
   },
@@ -694,6 +719,7 @@ return view.extend({
     var self = this;
     return Promise.resolve().then(function() {
       if (self.lastStatus.coreBusy || self.lastStatus.updateBusy || self.lastStatus.jobBusy) throw new Error(self.busyReason());
+      if (checked(self.dnsEnabled) && self.dnsPoolMode.value !== 'single' && !self.lastStatus.dnsPoolReady) throw new Error('Сначала нажмите «Подготовить DNS-группы» в разделе «Сеть».');
       self.collectSelection();
       self.profile.routing.failoverEnabled = checked(self.group);
       if (checked(self.group) && self.profile.routing.failoverTunnelIds.length < 2) throw new Error('Выберите минимум два подключения для группы.');
@@ -715,7 +741,9 @@ return view.extend({
       self.profile.routing.remoteLists = lines(self.remoteText.value).map(function(url, index) {
         return { id: 'remote-' + index, name: 'Внешний список ' + (index + 1), enabled: true, kind: 'domains', url: url };
       });
-      self.options = { interfaces: lines(self.interfaces.value), manageDns: checked(self.manageDns), ipv6: checked(self.ipv6),disableQuic:checked(self.disableQuic),downloadListsViaProxy:checked(self.downloadLists) };
+      self.options = { interfaces: lines(self.interfaces.value), manageDns: checked(self.manageDns), ipv6: checked(self.ipv6),disableQuic:checked(self.disableQuic),downloadListsViaProxy:checked(self.downloadLists),
+        dnsPoolMode:self.dnsPoolMode.value,dnsUpstreams:self.dnsUpstreams.value.split(/\r?\n/).map(function(v){return v.trim();}).filter(Boolean),
+        dnsBootstrapServers:self.dnsBootstrapServers.value.split(/\r?\n/).map(function(v){return v.trim();}).filter(Boolean) };
       self.profile = core.validate(self.profile);
       Object.keys(self.presetInputs).forEach(function(id) { self.presetInputs[id].checked = self.profile.routing.presetIds.includes(id); });
       var config = core.generate(self.profile, self.options);

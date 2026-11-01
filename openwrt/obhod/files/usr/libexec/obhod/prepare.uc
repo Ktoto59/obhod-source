@@ -45,6 +45,15 @@ if (config.dns && !length(filter(config.dns.servers, s => s.type == 'fakeip'))) 
     splice(config.route.rules, 1, 0, ...early);
 }
 config.experimental.clash_api = { external_controller: '127.0.0.1:2081', secret, access_control_allow_origin: [] };
+// TXT, MX and other non-address requests for selected domains keep the proxy
+// route too. Upgrade existing FakeIP profiles without rewriting user settings.
+for (let fake in filter(config.dns?.rules || [], r => r.server == 'fake-dns' && (r.domain_suffix || r.rule_set))) {
+    let match = { ...fake };
+    delete match.query_type; delete match.action; delete match.server; delete match.rewrite_ttl;
+    let known = filter(config.dns.rules, r => r.server == 'proxy-dns' && !r.query_type &&
+        sprintf('%J', r.domain_suffix) == sprintf('%J', match.domain_suffix) && sprintf('%J', r.rule_set) == sprintf('%J', match.rule_set));
+    if (!length(known)) push(config.dns.rules, { ...match, action: 'route', server: 'proxy-dns', rewrite_ttl: settings.profile.routing.dnsTtl || 60 });
+}
 config.log = { level: settings.profile.routing.enableDiagnostics ? 'info' : 'warn', timestamp: true };
 // Apply the routing fix to existing profiles without rewriting user settings.
 for (let rule in config.route?.rules || []) if (rule.action == 'sniff') rule.timeout = '1s';

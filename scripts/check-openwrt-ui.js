@@ -56,7 +56,7 @@ app.whenReady().then(async () => {
         assert(typeof Core === 'function' && Core.prototype instanceof BaseClass, 'Core exports a LuCI class constructor');
         core = new Core();
       }
-      let running = false, applied = null, saves = 0;
+      let running = false, applied = null, saves = 0, dnsPoolReady = false;
       let coreBusy = false, coreFlavor = 'sing-box-tiny', wireguard = false;
       let updateBusy = false, updateAvailable = false, updateState = '', appVersion = '0.1.5', failStatus = false, poller;
       const updateRequests = [];
@@ -91,13 +91,13 @@ app.whenReady().then(async () => {
         }
         if (spec.method === 'status') {
           if (failStatus) throw new Error('No related RPC reply');
-          return { running, configured: true, version: 'sing-box version 1.12.22', coreFlavor, coreBusy, wireguard,
+          return { dnsPoolReady, running, configured: true, version: 'sing-box version 1.12.22', coreFlavor, coreBusy, wireguard,
             obhodVersion:appVersion, updateBusy, updateAvailable, updateState, availableVersion:'0.1.7',jobBusy,jobState,
             routeName:'Сервер из работающего ядра',routeDelay:'83',routeOk:true,routeCheckedAt:Math.floor(Date.now()/1000) };
         }
         if(spec.method==='interfaces') return {devices:[{name:'br-lan',label:'lan · br-lan · 192.0.2.1',up:true},{name:'br-guest',label:'guest · br-guest',up:true}]};
         if(spec.method==='coreSizes') return {lite:{downloadBytes:11010846,installedBytes:31160083},full:{downloadBytes:15601977,installedBytes:44487113}};
-        if(spec.method==='service') {serviceRequests.push(args[0]);running=args[0]==='start';return {ok:true};}
+        if(spec.method==='service') {serviceRequests.push(args[0]);if(args[0]==='dns-prepare')dnsPoolReady=true;else running=args[0]==='start';return {ok:true};}
         if(spec.method==='diagnose') {diagnosticRequests.push(true);jobBusy=true;jobState='running';return {ok:true};}
         if(spec.method==='diagnostics') return {checks:[{name:'HTTPS через подключение',ok:true,message:'83 мс'}],note:'Проверьте шлюз клиента.'};
         if(spec.method==='logs') {logRequests++;return {text:logBody};}
@@ -264,7 +264,23 @@ app.whenReady().then(async () => {
       page.updateStatus({running:false,version:'sing-box version 1.13.21',coreFlavor:'sing-box-tiny',wireguard:false});
       page.presetInputs.russia_inside.click();
       page.presetInputs.discord.checked=true; page.presetInputs.telegram.checked=true; page.presetInputs.google_ai.checked=true; page.updatePresets();
-      return { nativeLoader, nativeDOM: !!nativeDOM, dnsSettings: true, interfaceDiscovery: true, serviceToggle: true, diagnostics: true, logs: true, routeLatency: true, selfUpdate: true, standaloneRPC: true, pollingRecovery: true, tabs: true, checkboxDefaults: true, presetCompatibility: true, serverSearch: true, selectAll: true, subscriptionImport: true, duplicates: true, routerConfig: true, validation: true, longNames: true, profileReadFailure: true, installerDefaults: true, protocolInstallation: true };
+      page.dnsEnabled.checked=true;page.dnsPoolMode.value='parallel';
+      page.dnsUpstreams.value='https://1.1.1.1/dns-query\\nhttps://1.0.0.1/dns-query';
+      page.dnsBootstrapServers.value='1.1.1.1\\n8.8.8.8';page.updateDnsFields();page.markDirty();
+      assert(!page.dnsPoolFields.hidden && page.dnsSingleFields.hidden,'DNS group editor replaces single-server fields');
+      var beforePoolSaves=saves;
+      await page.save(false);
+      assert(saves===beforePoolSaves && notifications.at(-1).includes('Подготовить DNS-группы'),'Missing optional DNS component is explained before save');
+      page.dnsPrepareButton.click();await handlerWork;
+      assert(serviceRequests.at(-1)==='dns-prepare' && !running,'DNS preparation uses the asynchronous service operation without starting a tunnel');
+      await page.save(false);
+      assert(saves===beforePoolSaves+1 && applied.options.dnsPoolMode==='parallel','DNS group mode and servers saved');
+      assert(applied.options.dnsUpstreams.length===2 && applied.config.dns.servers.find(s=>s.tag==='proxy-dns').server_port===1154,'DNS group has the proxy gateway');
+      assert(page.dnsPrepareButton.hidden,'Prepared DNS component no longer offers installation');
+      page.dnsUpstreams.value='invalid endpoint';page.markDirty();await page.save(false);
+      assert(saves===beforePoolSaves+1,'Invalid DNS group does not overwrite saved settings');
+      page.cancelChanges();assert(page.dnsUpstreams.value.includes('1.0.0.1') && !page.dirty,'Cancel restores DNS group editor');
+      return { nativeLoader, nativeDOM: !!nativeDOM, dnsSettings: true, dnsPool: true, interfaceDiscovery: true, serviceToggle: true, diagnostics: true, logs: true, routeLatency: true, selfUpdate: true, standaloneRPC: true, pollingRecovery: true, tabs: true, checkboxDefaults: true, presetCompatibility: true, serverSearch: true, selectAll: true, subscriptionImport: true, duplicates: true, routerConfig: true, validation: true, longNames: true, profileReadFailure: true, installerDefaults: true, protocolInstallation: true };
     })()`);
     console.log(`OPENWRT_UI_TEST ${JSON.stringify(result)}`);
     const screenshots = path.join(root, '.tmp', 'openwrt-ui-preview');

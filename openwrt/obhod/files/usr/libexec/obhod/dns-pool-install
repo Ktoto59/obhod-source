@@ -1,0 +1,20 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+set -eu
+umask 077
+RUN=/var/run/obhod
+BASE=/usr/libexec/obhod
+. "$BASE/package-lib.sh"
+die() { printf '%s\n' "$*" > "$RUN/job-message"; echo "$*" >&2; exit 1; }
+if [ -f /usr/lib/ucode/socket.so ] && ucode -e 'import * as socket from "socket";' >/dev/null 2>&1; then exit 0; fi
+work=$(mktemp -d /tmp/obhod-dns-install.XXXXXX)
+trap 'case "$work" in /tmp/obhod-dns-install.*) rm -rf "$work";; esac' EXIT
+trap 'exit 130' INT TERM
+planner="$BASE/installer-plan.uc"
+detect_manager
+printf 'Подготавливаем небольшой компонент DNS-групп…\n' > "$RUN/job-message"
+if [ "$manager" = apk ]; then apk update; else opkg update; fi
+resolve_sizes ucode-mod-socket
+check_budget
+if [ "$manager" = apk ]; then apk add ucode-mod-socket; else opkg install ucode-mod-socket; fi
+ucode -e 'import * as socket from "socket";' >/dev/null 2>&1 || die 'Не удалось загрузить DNS-компонент. Проверьте состояние пакетов OpenWrt.'

@@ -30,7 +30,14 @@ while [ "$attempt" -lt 10 ]; do
 	sleep 1
 	kill -0 "$child" 2>/dev/null || exit 1
 	# The DNS listener must be accepting connections before dnsmasq is changed.
-	grep -q '0100007F:041D .* 0A ' /proc/net/tcp && break
+	listening=1
+	grep -q '0100007F:041D .* 0A ' /proc/net/tcp || listening=0
+	for pool in direct proxy bootstrap; do
+		[ -s "$RUN/dns-pool-$pool.json" ] || continue
+		case "$pool" in direct) port=0481;; proxy) port=0482;; bootstrap) port=0483;; esac
+		grep -q "0100007F:$port .* 0A " /proc/net/tcp || listening=0
+	done
+	[ "$listening" = 1 ] && break
 	attempt=$((attempt + 1))
 done
 [ "$attempt" -lt 10 ] || exit 1

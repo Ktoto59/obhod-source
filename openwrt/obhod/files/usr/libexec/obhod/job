@@ -5,7 +5,7 @@ umask 077
 RUN=/var/run/obhod
 LOCK=/var/lock/obhod-job.lock
 action=${2:-}
-case "$action" in start|stop|diagnostics) ;; *) echo 'Недопустимая операция.' >&2; exit 1 ;; esac
+case "$action" in start|stop|diagnostics|dns-prepare) ;; *) echo 'Недопустимая операция.' >&2; exit 1 ;; esac
 mkdir -p "$RUN"; chmod 700 "$RUN"
 if [ "$1" = start ]; then
     mkdir "$LOCK" 2>/dev/null || { echo 'Проверка или переключение службы уже выполняется.' >&2; exit 1; }
@@ -37,6 +37,12 @@ finish() {
 }
 trap finish EXIT
 trap 'exit 130' INT TERM
+if [ "$action" = dns-prepare ]; then
+    if /usr/libexec/obhod/dns-pool-install > "$RUN/control-log" 2>&1; then
+        result=done; message='DNS-группы готовы. Выберите серверы и сохраните настройки.'
+    else message='Не удалось подготовить DNS-группы. Проверьте доступ к репозиторию OpenWrt и свободное место.'; fi
+    exit 0
+fi
 if [ "$action" = start ] || [ "$action" = stop ]; then
     if /usr/libexec/obhod/control "$action" > "$RUN/control-log" 2>&1; then
         result=done; message='Состояние службы изменено.'

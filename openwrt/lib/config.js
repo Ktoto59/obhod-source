@@ -1,5 +1,6 @@
 const { DEFAULT_CONFIG, validateConfig } = require('../../shared/profile');
-const { generateConfig } = require('../../shared/config-generator');
+const { generateConfig, tunnelTag } = require('../../shared/config-generator');
+const { configureDnsPool } = require('./dns-pool');
 
 function configureFakeIp(config, profile, options) {
   const selectedDns = config.dns.rules.filter(rule => rule.server === 'proxy-dns').map(rule => {
@@ -14,7 +15,8 @@ function configureFakeIp(config, profile, options) {
   const fakeMatches = [{ domain: ['fakeip-check.obhod.example.com'] }, ...selectedDns];
   config.dns.rules = [
     ...fakeMatches.map(match => ({ ...match, query_type: ['HTTPS', 'SVCB', ...(options.ipv6 === true ? [] : ['AAAA'])], action: 'predefined', rcode: 'NOERROR' })),
-    ...fakeMatches.map(match => ({ ...match, query_type: options.ipv6 === true ? ['A', 'AAAA'] : ['A'], action: 'route', server: 'fake-dns', rewrite_ttl: profile.routing.dnsTtl }))
+    ...fakeMatches.map(match => ({ ...match, query_type: options.ipv6 === true ? ['A', 'AAAA'] : ['A'], action: 'route', server: 'fake-dns', rewrite_ttl: profile.routing.dnsTtl })),
+    ...selectedDns.map(match => ({ ...match, action: 'route', server: 'proxy-dns', rewrite_ttl: profile.routing.dnsTtl }))
   ];
   config.dns.reverse_mapping = false;
   config.dns.independent_cache = true;
@@ -67,9 +69,10 @@ function generateRouterConfig(input, options = {}) {
   // A missed name would send a selected domain to the direct final route.
   for (const rule of config.route.rules) if (rule.action === 'sniff') rule.timeout = '1s';
   configureFakeIp(config, profile, options);
+  configureDnsPool(config, profile, options);
   if (options.disableQuic === true) config.route.rules.splice(1, 0, { network: 'udp', port: 443, action: 'reject' });
   if (options.downloadListsViaProxy === true) {
-    const proxyTag = profile.routing.failoverEnabled ? 'proxy' : config.outbounds.find(outbound => outbound.tag !== 'direct')?.tag || config.endpoints[0]?.tag;
+    const proxyTag = profile.routing.failoverEnabled ? 'proxy' : tunnelTag({ id: profile.routing.activeTunnelId });
     for (const list of config.route.rule_set) if (list.type === 'remote') list.download_detour = proxyTag;
   }
   // Keep the router's default interface detection and the direct final route.

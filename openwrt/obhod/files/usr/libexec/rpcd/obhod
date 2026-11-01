@@ -105,6 +105,7 @@ case "$2" in
 		json_add_boolean updateAvailable "$(if [ "$available_version" != "$app_version" ] && jsonfilter -i "$RUN/update-release.json" -e '@.available' 2>/dev/null | grep -qx true; then echo 1; else echo 0; fi)"
 		json_add_string error "$(cat "$RUN/error" 2>/dev/null)"
 		json_add_boolean jobBusy "$([ -d /var/lock/obhod-job.lock ] && echo 1 || echo 0)"
+		json_add_boolean dnsPoolReady "$([ -f /usr/lib/ucode/socket.so ] && echo 1 || echo 0)"
 		json_add_string jobState "$(cat "$RUN/job-state" 2>/dev/null)"
 		json_add_string jobAction "$(cat "$RUN/job-action" 2>/dev/null)"
 		json_add_string jobMessage "$(cat "$RUN/job-message" 2>/dev/null)"
@@ -142,7 +143,7 @@ case "$2" in
 		;;
 	service|diagnose)
 		if [ "$2" = diagnose ]; then action=diagnostics
-		else action=$(jsonfilter -i "$request" -e '@.action' 2>/dev/null); case "$action" in start|stop) ;; *) reply 0 'Недопустимое действие службы.'; exit 0 ;; esac; fi
+		else action=$(jsonfilter -i "$request" -e '@.action' 2>/dev/null); case "$action" in start|stop|dns-prepare) ;; *) reply 0 'Недопустимое действие службы.'; exit 0 ;; esac; fi
 		if message=$(/usr/libexec/obhod/job start "$action" 2>&1); then reply 1
 		else reply 0 "$message"; fi
 		;;
