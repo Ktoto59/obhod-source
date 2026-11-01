@@ -56,8 +56,8 @@ install_compat_core() {
 	if [ "$manager" = apk ]; then
 		set -- "$compat_file"
 		if [ "$core" = sing-box ]; then set -- "$@" '!sing-box-tiny'; else set -- "$@" sing-box; fi
-		apk --no-network --simulate add --allow-downgrades --allow-untrusted "$@" || die 'Пакетный менеджер отклонил совместимое ядро.'
-		apk --no-network add --allow-downgrades --allow-untrusted "$@" || die 'Не удалось установить совместимое ядро.'
+		apk --no-network --simulate add --allow-untrusted "$@" || die 'Пакетный менеджер отклонил совместимое ядро.'
+		apk --no-network add --allow-untrusted "$@" || die 'Не удалось установить совместимое ядро.'
 	else
 		compat_old=$(find_core)
 		if [ -n "$compat_old" ]; then
