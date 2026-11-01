@@ -928,7 +928,7 @@ function configureFakeIp(config, profile, options) {
     delete resolve.outbound;
     return [resolve, { ...rule }];
   });
-  config.route.rules.splice(1, 0, ...early);
+  config.route.rules.splice(config.route.rules.findIndex(rule => rule.action === 'sniff'), 0, ...early);
 }
 
 function defaultRouterProfile() {
@@ -963,6 +963,10 @@ function generateRouterConfig(input, options = {}) {
   // dnsmasq keeps answering local names and forwards upstream requests here.
   config.inbounds.push({ type: 'direct', tag: 'dns-in', listen: '127.0.0.1', listen_port: 1053 });
   config.route.rules.unshift({ inbound: ['dns-in'], action: 'hijack-dns' });
+  // The router owns LAN DNS, including TCP and requests to a stale TUN DNS IP.
+  // Other UDP ports must never inherit a DNS-session routing decision.
+  config.route.rules.splice(1, 0, { inbound: ['tun-in'], network: ['tcp', 'udp'], port: 53, action: 'hijack-dns' });
+  config.route.rules = config.route.rules.filter(rule => !(rule.protocol === 'dns' && rule.action === 'hijack-dns'));
   // Wi-Fi clients can send ClientHello after the default 300 ms window.
   // A missed name would send a selected domain to the direct final route.
   for (const rule of config.route.rules) if (rule.action === 'sniff') rule.timeout = '1s';

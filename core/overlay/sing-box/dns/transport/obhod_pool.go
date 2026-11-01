@@ -128,10 +128,13 @@ func validPoolAnswer(request, answer *dns.Msg) bool {
 			return false
 		}
 	}
-	return answer.Rcode == dns.RcodeSuccess || answer.Rcode == dns.RcodeNameError
+	return true
 }
 
 func (p *obhodPool) Exchange(parent context.Context, request *dns.Msg) (*dns.Msg, error) {
+	if err := parent.Err(); err != nil {
+		return nil, err
+	}
 	if len(p.servers) < 2 {
 		return nil, fmt.Errorf("DNS pool has not started")
 	}
@@ -145,6 +148,14 @@ func (p *obhodPool) Exchange(parent context.Context, request *dns.Msg) (*dns.Msg
 	answers := make(chan poolAnswer, len(p.servers))
 	sent := make([]bool, len(p.servers))
 	active, started := 0, 0
+	var fallback *dns.Msg
+	finishFallback := func() (*dns.Msg, error) {
+		if fallback != nil {
+			fallback.Id = request.Id
+			return fallback, nil
+		}
+		return nil, fmt.Errorf("all DNS pool members failed")
+	}
 	launch := func(index int) {
 		if index < 0 || sent[index] {
 			return
@@ -154,9 +165,10 @@ func (p *obhodPool) Exchange(parent context.Context, request *dns.Msg) (*dns.Msg
 		started++
 		// The token remains held until every losing exchange exits. This bounds
 		// goroutines even if a member takes time to react to cancellation.
+		packet := request.Copy()
 		go func() {
 			begin := time.Now()
-			message, err := p.servers[index].Exchange(ctx, request.Copy())
+			message, err := p.servers[index].Exchange(ctx, packet)
 			answers <- poolAnswer{index, message, err, time.Since(begin)}
 		}()
 	}
@@ -190,13 +202,20 @@ func (p *obhodPool) Exchange(parent context.Context, request *dns.Msg) (*dns.Msg
 	for {
 		select {
 		case <-ctx.Done():
+			if parent.Err() == nil && fallback != nil {
+				return finishFallback()
+			}
 			return nil, ctx.Err()
 		case result := <-answers:
 			active--
 			valid := result.err == nil && validPoolAnswer(request, result.message)
+			success := valid && (result.message.Rcode == dns.RcodeSuccess || result.message.Rcode == dns.RcodeNameError)
+			if valid && !success && (fallback == nil || result.message.Rcode == dns.RcodeRefused) {
+				fallback = result.message
+			}
 			p.mu.Lock()
 			h := &p.health[result.index]
-			if valid {
+			if valid && result.message.Rcode != dns.RcodeServerFailure {
 				if h.delay == 0 {
 					h.delay = result.elapsed
 				} else {
@@ -207,12 +226,12 @@ func (p *obhodPool) Exchange(parent context.Context, request *dns.Msg) (*dns.Msg
 				h.failures++
 			}
 			p.mu.Unlock()
-			if valid {
+			if success {
 				result.message.Id = request.Id
 				return result.message, nil
 			}
 			if started == len(p.servers) && active == 0 {
-				return nil, fmt.Errorf("all DNS pool members failed")
+				return finishFallback()
 			}
 			if p.mode == "balanced" {
 				launch(p.preferred(sent))

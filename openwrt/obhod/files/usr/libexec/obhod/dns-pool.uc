@@ -132,7 +132,9 @@ function answer(index, packet) {
     if (!q || !q.sent[index] || q.failed[index] || !parsed || parsed.key != q.parsed.key || (ord(packet, 2) & 120) != (ord(q.packet, 2) & 120)) return;
     let code = ord(packet, 3) & 15;
     if (code != 0 && code != 3) {
-        q.failed[index] = true; sources[index].failures++;
+        if (!q.fallback || code==5) q.fallback=packet;
+        q.failed[index] = true;
+        if (code==2) sources[index].failures++; else sources[index].failures=0;
         if (config.mode == 'balanced') next(q);
         return;
     }
@@ -221,7 +223,7 @@ while (true) {
     for (let id in keys(pending)) {
         let q = pending[id];
         if (!q) continue;
-        if (stamp >= q.deadline || length(q.failed) == length(sources)) finish(q, failure(q.packet, q.parsed));
+        if (stamp >= q.deadline || length(q.failed) == length(sources)) finish(q, q.fallback || failure(q.packet, q.parsed));
         else if (config.mode == 'balanced' && stamp >= q.next) next(q);
     }
     for (let client in values(clients)) if (stamp >= client.deadline) closeClient(client);

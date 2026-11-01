@@ -117,8 +117,38 @@ func TestObhodPoolCancellationLimitsAndFailure(t *testing.T) {
 		t.Fatal("unbounded admission")
 	}
 	failed := testPool("parallel", &poolStub{code: dns.RcodeRefused}, &poolStub{code: dns.RcodeServerFailure})
-	if _, err := failed.Exchange(context.Background(), poolQuery()); err == nil {
-		t.Fatal("all failures accepted")
+	if answer, err := failed.Exchange(context.Background(), poolQuery()); err != nil || answer.Rcode != dns.RcodeRefused {
+		t.Fatalf("filter refusal was lost: %v", err)
+	}
+}
+
+func TestObhodPoolPreservesProviderRcodes(t *testing.T) {
+	for _, mode := range []string{"parallel", "balanced"} {
+		for _, code := range []int{dns.RcodeRefused, dns.RcodeServerFailure, dns.RcodeFormatError, dns.RcodeNotImplemented} {
+			p := testPool(mode, &poolStub{code: code}, &poolStub{code: code})
+			q := poolQuery()
+			a, err := p.Exchange(context.Background(), q)
+			if err != nil || a.Rcode != code || a.Id != q.Id {
+				t.Fatalf("mode=%s code=%d: %v", mode, code, err)
+			}
+		}
+	}
+}
+
+func TestObhodPoolSuccessfulAnswerWinsOverRefused(t *testing.T) {
+	for _, mode := range []string{"parallel", "balanced"} {
+		p := testPool(mode, &poolStub{code: dns.RcodeRefused}, &poolStub{wait: 15 * time.Millisecond})
+		a, err := p.Exchange(context.Background(), poolQuery())
+		if err != nil || a.Rcode != dns.RcodeSuccess {
+			t.Fatalf("mode=%s: %v", mode, err)
+		}
+	}
+}
+
+func TestObhodPoolTransportFailuresRemainErrors(t *testing.T) {
+	p := testPool("parallel", &poolStub{wrong: true}, &poolStub{wrong: true})
+	if _, err := p.Exchange(context.Background(), poolQuery()); err == nil {
+		t.Fatal("invalid wire answers were accepted")
 	}
 }
 func TestObhodPoolValidatesOptions(t *testing.T) {

@@ -46,7 +46,7 @@ exit 1''')
             for profile in ['lite','full']:
                 catalog['packages'].append({'arch':arch,'manager':'apk','profile':profile,'releases':['25.12'],
                     'url':'https://api.github.com/repos/Ktoto59/obhod-releases/releases/assets/1',
-                    'sha256':hashlib.sha256(artifact).hexdigest(),'bytes':len(artifact),'installedBytes':10000,'version':'1.13.21-r200'})
+                    'sha256':hashlib.sha256(artifact).hexdigest(),'bytes':len(artifact),'installedBytes':10000,'version':'1.13.21-r300'})
         catalog_path=lab/'tmp/catalog.json';catalog_path.write_text(json.dumps(catalog))
         (lab/'tmp/test.sh').write_text('''#!/bin/sh
 set -eu
@@ -77,13 +77,13 @@ echo "SELECTED=$compat"
         assert (lab/'tmp/apk-calls').read_bytes()==calls
         (lab/'tmp/core.apk').write_bytes(artifact)
         (lab/'tmp/other-service').touch();run('sing-box-tiny','install',ok=False);(lab/'tmp/other-service').unlink()
-        (lab/'tmp/version').write_text('1.13.21-obhod.2')
-        (lab/'lib/apk/db/installed').write_text('P:sing-box-tiny\nV:1.13.21-r200\n\n')
+        (lab/'tmp/version').write_text('1.13.21-obhod.3')
+        (lab/'lib/apk/db/installed').write_text('P:sing-box-tiny\nV:1.13.21-r300\n\n')
         (lab/'tmp/core.apk').write_bytes(b'not needed for an installed compatible core')
         calls=(lab/'tmp/apk-calls').read_bytes();run('sing-box-tiny','install')
         assert (lab/'tmp/apk-calls').read_bytes()==calls, 'Installed core must not be downloaded or replaced'
         (lab/'tmp/version').write_text('1.14.0');assert 'SELECTED=0' in run()
-        (lab/'tmp/version').write_text('1.13.21-obhod.3');assert 'SELECTED=0' in run()
+        (lab/'tmp/version').write_text('1.13.21-obhod.4');assert 'SELECTED=0' in run()
         (lab/'tmp/version').write_text('1.12.22');assert 'SELECTED=1' in run()
         (lab/'etc/apk/arch').write_text('x86_64');assert 'SELECTED=0' in run()
         (lab/'etc/apk/arch').write_text('aarch64_cortex-a53');assert 'SELECTED=1' in run('sing-box')

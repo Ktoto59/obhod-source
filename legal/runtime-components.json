@@ -140,6 +140,90 @@
       "releaseSourceName": "sing-box-1.13.21-obhod.2-source.tar.gz",
       "buildInstructions": "core/README.md",
       "sourceStatus": "verified"
+    },
+    {
+      "id": "sing-box-obhod-mipsle-lite-v3",
+      "name": "sing-box Obhod compatibility build (mipsle, lite)",
+      "kind": "external-process",
+      "bundled": false,
+      "version": "1.13.21-obhod.3",
+      "revision": "628cb31ffa79cffffd34c2f9cde6cae044e4fc12",
+      "sha256": "0cbc74063b8dea67cc47ac12f7d3402fe6e3c38b472914ce9af073bcc3893056",
+      "licenseExpression": "GPL-3.0-or-later",
+      "licenseFiles": [
+        "LICENSES/GPL-3.0-only.txt",
+        "LICENSES/sing-box-GPL-notice.txt"
+      ],
+      "sourceRepository": "https://github.com/SagerNet/sing-box",
+      "sourceUrl": "https://github.com/SagerNet/sing-box/tree/628cb31ffa79cffffd34c2f9cde6cae044e4fc12",
+      "sourceArchiveUrl": "https://api.github.com/repos/Ktoto59/obhod-releases/releases/assets/699249983",
+      "sourceArchiveSha256": "938a8fd04d5153579fc4836e6038450ff2f5561cb6efc3e14dbdcb5e030621f1",
+      "releaseSourceName": "sing-box-1.13.21-obhod.3-source.tar.gz",
+      "buildInstructions": "core/README.md",
+      "sourceStatus": "verified"
+    },
+    {
+      "id": "sing-box-obhod-mipsle-full-v3",
+      "name": "sing-box Obhod compatibility build (mipsle, full)",
+      "kind": "external-process",
+      "bundled": false,
+      "version": "1.13.21-obhod.3",
+      "revision": "628cb31ffa79cffffd34c2f9cde6cae044e4fc12",
+      "sha256": "45cb44916572a0855c34b4811dc23cc44a3909cd89c045c1109cde7dd093ff98",
+      "licenseExpression": "GPL-3.0-or-later",
+      "licenseFiles": [
+        "LICENSES/GPL-3.0-only.txt",
+        "LICENSES/sing-box-GPL-notice.txt"
+      ],
+      "sourceRepository": "https://github.com/SagerNet/sing-box",
+      "sourceUrl": "https://github.com/SagerNet/sing-box/tree/628cb31ffa79cffffd34c2f9cde6cae044e4fc12",
+      "sourceArchiveUrl": "https://api.github.com/repos/Ktoto59/obhod-releases/releases/assets/699249983",
+      "sourceArchiveSha256": "938a8fd04d5153579fc4836e6038450ff2f5561cb6efc3e14dbdcb5e030621f1",
+      "releaseSourceName": "sing-box-1.13.21-obhod.3-source.tar.gz",
+      "buildInstructions": "core/README.md",
+      "sourceStatus": "verified"
+    },
+    {
+      "id": "sing-box-obhod-arm64-lite-v3",
+      "name": "sing-box Obhod compatibility build (arm64, lite)",
+      "kind": "external-process",
+      "bundled": false,
+      "version": "1.13.21-obhod.3",
+      "revision": "628cb31ffa79cffffd34c2f9cde6cae044e4fc12",
+      "sha256": "8cd389d8667b9fc4a314db38b36c1ea9f91663df015de93dd110d3d5f815ac30",
+      "licenseExpression": "GPL-3.0-or-later",
+      "licenseFiles": [
+        "LICENSES/GPL-3.0-only.txt",
+        "LICENSES/sing-box-GPL-notice.txt"
+      ],
+      "sourceRepository": "https://github.com/SagerNet/sing-box",
+      "sourceUrl": "https://github.com/SagerNet/sing-box/tree/628cb31ffa79cffffd34c2f9cde6cae044e4fc12",
+      "sourceArchiveUrl": "https://api.github.com/repos/Ktoto59/obhod-releases/releases/assets/699249983",
+      "sourceArchiveSha256": "938a8fd04d5153579fc4836e6038450ff2f5561cb6efc3e14dbdcb5e030621f1",
+      "releaseSourceName": "sing-box-1.13.21-obhod.3-source.tar.gz",
+      "buildInstructions": "core/README.md",
+      "sourceStatus": "verified"
+    },
+    {
+      "id": "sing-box-obhod-arm64-full-v3",
+      "name": "sing-box Obhod compatibility build (arm64, full)",
+      "kind": "external-process",
+      "bundled": false,
+      "version": "1.13.21-obhod.3",
+      "revision": "628cb31ffa79cffffd34c2f9cde6cae044e4fc12",
+      "sha256": "20460cab9884f19987c2cee09ab614152991bc00e97c140ff7384475d3c9b38d",
+      "licenseExpression": "GPL-3.0-or-later",
+      "licenseFiles": [
+        "LICENSES/GPL-3.0-only.txt",
+        "LICENSES/sing-box-GPL-notice.txt"
+      ],
+      "sourceRepository": "https://github.com/SagerNet/sing-box",
+      "sourceUrl": "https://github.com/SagerNet/sing-box/tree/628cb31ffa79cffffd34c2f9cde6cae044e4fc12",
+      "sourceArchiveUrl": "https://api.github.com/repos/Ktoto59/obhod-releases/releases/assets/699249983",
+      "sourceArchiveSha256": "938a8fd04d5153579fc4836e6038450ff2f5561cb6efc3e14dbdcb5e030621f1",
+      "releaseSourceName": "sing-box-1.13.21-obhod.3-source.tar.gz",
+      "buildInstructions": "core/README.md",
+      "sourceStatus": "verified"
     }
   ]
 }

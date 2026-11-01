@@ -55,6 +55,13 @@ for (let fake in filter(config.dns?.rules || [], r => r.server == 'fake-dns' && 
     if (!length(known)) push(config.dns.rules, { ...match, action: 'route', server: 'proxy-dns', rewrite_ttl: settings.profile.routing.dnsTtl || 60 });
 }
 config.log = { level: settings.profile.routing.enableDiagnostics ? 'info' : 'warn', timestamp: true };
+// Own standard LAN DNS regardless of sniffing, including TCP to a stale TUN IP.
+config.route.rules = filter(config.route.rules, r => !(r.protocol == 'dns' && r.action == 'hijack-dns'));
+if (!length(filter(config.route.rules, r => r.action=='hijack-dns' && r.port==53 && index(r.inbound || [],'tun-in')>=0))) {
+    let position=0;
+    while (position<length(config.route.rules) && config.route.rules[position].action=='hijack-dns' && length(config.route.rules[position].inbound || [])) position++;
+    splice(config.route.rules,position,0,{inbound:['tun-in'],network:['tcp','udp'],port:53,action:'hijack-dns'});
+}
 // Apply the routing fix to existing profiles without rewriting user settings.
 for (let rule in config.route?.rules || []) if (rule.action == 'sniff') rule.timeout = '1s';
 writefile('/var/run/obhod/config.json', sprintf('%J\n', config));

@@ -16,7 +16,7 @@ select_compat_core() {
 	# Never silently downgrade a newer upstream core to the pinned compatibility base.
 	if command -v sing-box >/dev/null 2>&1; then
 		compat_current=$(sing-box version 2>/dev/null | head -n 1 | sed -n 's/^sing-box version //p')
-		case "$compat_current" in 1.12.*|1.13.[0-9]|1.13.1[0-9]|1.13.20|1.13.21|1.13.21-obhod.1|1.13.21-obhod.2|'') ;; *) return 0;; esac
+		case "$compat_current" in 1.12.*|1.13.[0-9]|1.13.1[0-9]|1.13.20|1.13.21|1.13.21-obhod.1|1.13.21-obhod.2|1.13.21-obhod.3|'') ;; *) return 0;; esac
 	fi
 	compat_profile=full; [ "$core" != sing-box-tiny ] || compat_profile=lite
 	ucode "$compat_selector" "$compat_catalog" "$compat_arch" "$manager" "$compat_profile" "$compat_release" > "$work/core-selection" || die 'Не удалось проверить каталог совместимых ядер.'
@@ -25,7 +25,7 @@ select_compat_core() {
 	compat=1
 	compat_plan_installed=$compat_installed
 	compat_plan_download=$compat_bytes
-	if [ "${compat_current:-}" = 1.13.21-obhod.2 ] && [ "$(find_core)" = "$core" ] && /usr/bin/sing-box obhod-capabilities 2>/dev/null | grep -qx dns-pool-v1; then
+	if [ "${compat_current:-}" = 1.13.21-obhod.3 ] && [ "$(find_core)" = "$core" ] && /usr/bin/sing-box obhod-capabilities 2>/dev/null | grep -qx dns-pool-v1; then
 		compat_skip=1; compat_plan_installed=0; compat_plan_download=0
 	fi
 	printf 'Совместимое ядро Обхода: %s · %s · %s\n' "$compat_arch" "$compat_profile" "$compat_version"

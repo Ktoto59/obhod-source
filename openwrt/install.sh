@@ -7,7 +7,7 @@ BUNDLE_API_URL=''
 set -eu
 umask 077
 export LC_ALL=C
-version=0.1.14
+version=0.1.15
 yes=0
 preset_choice=
 profile=auto

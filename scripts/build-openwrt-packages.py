@@ -17,7 +17,7 @@ import tarfile
 import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
-VERSION = '0.1.14'
+VERSION = '0.1.15'
 DEPS = ['firewall4', 'kmod-tun', 'kmod-nft-tproxy', 'kmod-nft-queue',
         'uclient-fetch', 'ca-bundle', 'jshn', 'jsonfilter', 'rpcd', 'rpcd-mod-file', 'ucode', 'ucode-mod-fs']
 POST = '''#!/bin/sh

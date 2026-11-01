@@ -31,14 +31,15 @@ def receive(sock, count):
     return data
 
 
-def response(data, address='203.0.113.42'):
+def response(data, address='203.0.113.42', rcode=0):
     end = 12
     while data[end]: end += data[end]+1
     end += 5
     kind = struct.unpack('!H', data[end-4:end-2])[0]
     answer = b'\xc0\x0c\0\1\0\1\0\0\0\0\0\4'+socket.inet_aton(address) if kind == 1 else b''
     if answer and b'large' in data: answer *= 200
-    return data[:2]+struct.pack('!HHHHH', 0x8180, 1, len(answer)//16, 0, 0)+data[12:end]+answer
+    if rcode:answer=b''
+    return data[:2]+struct.pack('!HHHHH', 0x8180 | rcode, 1, len(answer)//16, 0, 0)+data[12:end]+answer
 
 
 class UDP(socketserver.ThreadingUDPServer):
@@ -49,7 +50,9 @@ class UDP(socketserver.ThreadingUDPServer):
             def handle(handler):
                 self.count += 1
                 packet=handler.request[0]
-                if drop and b'servfail' in packet:
+                if b'refused' in packet or b'all-servfail' in packet:
+                    handler.request[1].sendto(response(packet,rcode=5 if b'refused' in packet else 2),handler.client_address)
+                elif drop and b'servfail' in packet:
                     answer=response(packet);answer=answer[:3]+b'\x82'+answer[4:6]+b'\0\0'+answer[8:-16]
                     handler.request[1].sendto(answer,handler.client_address)
                 elif not drop:handler.request[1].sendto(response(packet,address),handler.client_address)
@@ -93,7 +96,7 @@ class TCP(socketserver.ThreadingTCPServer):
                             size = struct.unpack('!H', receive(client, 2))[0]
                             packet=receive(client,size)
                             if b'servfail' in packet:time.sleep(0.08)
-                            answer = response(packet); self.count += 1
+                            answer = response(packet,rcode=5 if b'refused' in packet else 2 if b'all-servfail' in packet else 0); self.count += 1
                             client.sendall(struct.pack('!H', len(answer))+answer)
                 except (OSError, EOFError): pass
                 finally:
@@ -107,7 +110,7 @@ class TCP(socketserver.ThreadingTCPServer):
             except OSError: pass
 
 
-def query(port, name, tcp=False, timeout=3, kind=1):
+def query(port, name, tcp=False, timeout=3, kind=1, rcode=False):
     question = b''.join(bytes([len(part)])+part.encode() for part in name.split('.'))+b'\0'+struct.pack('!HH',kind,1)
     packet = b'\x42\x42\x01\x00\x00\x01'+b'\0'*6+question
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM if tcp else socket.SOCK_DGRAM) as sock:
@@ -119,6 +122,7 @@ def query(port, name, tcp=False, timeout=3, kind=1):
             sock.send(packet); data = sock.recv(65536)
     assert data[:2] == packet[:2] and data[2] & 128
     assert data[12:12+len(question)]==question
+    if rcode:return data[3] & 15
     if data[3] & 15 or not struct.unpack('!H', data[6:8])[0]: return None
     if name.startswith('large'):assert struct.unpack('!H',data[6:8])[0]==200
     return socket.inet_ntoa(data[-4:])
@@ -214,6 +218,12 @@ console.log(JSON.stringify({version:1,profile,options,config}));'''
             print(f'PASS: parallel first healthy answer with one silent upstream ({elapsed:.3f}s)')
             assert query(1153,'servfail.example')=='203.0.113.42'
             print('PASS: a fast SERVFAIL does not hide a slower successful answer')
+            assert query(1153,'refused.example',rcode=True)==5
+            assert query(1053,'refused.example',kind=65,rcode=True)==5
+            assert query(1153,'all-servfail.example',rcode=True)==2
+            core_log.flush();core_log.seek(0)
+            assert not any('refused.example' in line and 'ERROR' in line for line in core_log.read().splitlines())
+            print('PASS: provider REFUSED/SERVFAIL reach clients as DNS replies, not transport errors')
             assert query(1153,'selected.example')=='203.0.113.42'
             assert query(1053,'selected.example').startswith('198.18.')
             print('PASS: real upstream replies bypass FakeIP; LAN clients keep FakeIP')

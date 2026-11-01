@@ -13,7 +13,7 @@ import tempfile
 import textwrap
 
 ROOT=Path(__file__).resolve().parent.parent
-VERSION='1.13.21-obhod.2'
+VERSION='1.13.21-obhod.3'
 STOCK_HASHES={
     ('mipsel_24kc','sing-box'):'9df59a6073a5e49a11894d1f837d3dcc1debe1c396434b55416bdf32929e69f4',
     ('mipsel_24kc','sing-box-tiny'):'6323a0aa122f0b9556a256c9b4f85176ec42ce947bda7c9fa4294711023edd39',
@@ -47,26 +47,27 @@ def build(binaries,stocks,apk,output,support=None):
                 shutil.copyfile(ROOT/'LICENSES/GPL-3.0-only.txt',notice/'COPYING')
                 (notice/'NOTICE').write_text('sing-box '+VERSION+' (GPL-3.0-or-later)\n'
                     'Based on sing-box 628cb31ffa79cffffd34c2f9cde6cae044e4fc12 and sing-tun f3b42b8b8e061ef849213a776d9fcf3d5f6ea239.\n'
-                    'Patches: 31-bit redirect table IDs, bounded DNS pools, ICMP timeout logging.\n'
+                    'sing v0.8.14: 87773cc9c5b2a4e4fc05cbd2db304ba23ca13515.\n'
+                    'Patches: 31-bit table IDs, bounded DNS pools, DNS RCODE preservation, DNS UDP isolation, ICMP logging.\n'
                     'Corresponding source and build instructions accompany this release.\n',encoding='utf-8')
-                args=[apk,'mkpkg','--info','name:'+package,'--info','version:1.13.21-r200',
+                args=[apk,'mkpkg','--info','name:'+package,'--info','version:1.13.21-r300',
                     '--info','arch:'+arch,'--info','license:GPL-3.0-or-later',
                     '--info','maintainer:Obhod contributors','--info','description:Sing-box with Obhod compatibility patches',
                     '--info','url:https://github.com/Ktoto59/obhod-source',
                     '--info','depends:ca-bundle kmod-inet-diag kmod-tun libc']
-                if profile=='lite':args+=['--info','provides:sing-box=1.13.21-r200 sing-box-tiny-any']
+                if profile=='lite':args+=['--info','provides:sing-box=1.13.21-r300 sing-box-tiny-any']
                 for name,body in scripts.items():
                     file=work/name;file.write_text(body);args+=['--script',name+':'+str(file)]
-                artifact=output/f'{package}-1.13.21-r200_{arch}.apk'
+                artifact=output/f'{package}-1.13.21-r300_{arch}.apk'
                 subprocess.run(args+['--files',stage,'--output',artifact],check=True)
                 files={f.relative_to(stage).as_posix():(f.read_bytes(),f.stat().st_mode&0o777) for f in stage.rglob('*') if f.is_file() and not f.relative_to(stage).as_posix().startswith('lib/apk/')}
-                control=f'Package: {package}\nVersion: 1.13.21-200\nArchitecture: {arch}\nMaintainer: Obhod contributors\nLicense: GPL-3.0-or-later\nSection: net\nDepends: libc, ca-bundle, kmod-inet-diag, kmod-tun\n'
+                control=f'Package: {package}\nVersion: 1.13.21-300\nArchitecture: {arch}\nMaintainer: Obhod contributors\nLicense: GPL-3.0-or-later\nSection: net\nDepends: libc, ca-bundle, kmod-inet-diag, kmod-tun\n'
                 if profile=='lite':control+='Provides: sing-box, sing-box-tiny-any\nConflicts: sing-box\n'
                 else:control+='Conflicts: sing-box-tiny\n'
                 control+='Require-User: sing-box=5566:sing-box=5566\nDescription: Sing-box with Obhod compatibility patches\n'
                 conffiles=(stage/f'lib/apk/packages/{package}.conffiles').read_bytes()
                 controls={'control':(control.encode(),0o644),'postinst':(scripts['post-install'].encode(),0o755),'prerm':(scripts['pre-deinstall'].encode(),0o755),'conffiles':(conffiles,0o644)}
-                ipk=output/f'{package}_1.13.21-200_{arch}.ipk'
+                ipk=output/f'{package}_1.13.21-300_{arch}.ipk'
                 ipk.write_bytes(builder.tar_bytes({'debian-binary':(b'2.0\n',0o644),'control.tar.gz':(builder.tar_bytes(controls),0o644),'data.tar.gz':(builder.tar_bytes(files),0o644)}))
                 # Preserve original service files and packaging scripts for offline rebuilds.
                 support=output/'stock-support'/arch/package
@@ -75,7 +76,7 @@ def build(binaries,stocks,apk,output,support=None):
                 (support.parent/(package+'-metadata.txt')).write_text(metadata)
                 for manager,file in [('apk',artifact),('opkg',ipk)]:
                     records.append({'arch':arch,'manager':manager,'profile':profile,'name':file.name,
-                        'version':'1.13.21-r200' if manager=='apk' else '1.13.21-200',
+                        'version':'1.13.21-r300' if manager=='apk' else '1.13.21-300',
                         'sha256':hashlib.sha256(file.read_bytes()).hexdigest(),'bytes':file.stat().st_size,
                         'installedBytes':sum(len(content) for content,_ in files.values()),
                         'releases':['25.12'] if manager=='apk' else ['24.10']})

@@ -37,7 +37,7 @@ exec /bin/opkg-real --conf /etc/opkg.conf --offline-root / "$@"
 ''');native.chmod(0o755)
         config=lab/'etc/opkg.conf';config.write_text(config.read_text().replace('option check_signature','# offline fixture')+'\nsrc fixture file:///tmp/repo\n')
         def package(name,version):
-            binary=f'#!/bin/sh\nif [ "$1" = version ]; then echo "sing-box version {"1.13.21-obhod.2" if version.endswith("200") else "1.13.21"}"; else echo dns-pool-v1; echo redirect-table-31bit; fi\n'
+            binary=f'#!/bin/sh\nif [ "$1" = version ]; then echo "sing-box version {"1.13.21-obhod.3" if version.endswith("300") else "1.13.21"}"; else echo dns-pool-v1; echo redirect-table-31bit; fi\n'
             control=f'Package: {name}\nVersion: {version}\nArchitecture: all\nInstalled-Size: 10000\nDescription: Isolated fixture\n'
             if name.endswith('tiny'):control+='Provides: sing-box\nConflicts: sing-box\n'
             data=builder.tar_bytes({'debian-binary':(b'2.0\n',0o644),'control.tar.gz':(builder.tar_bytes({'control':(control.encode(),0o644)}),0o644),
@@ -48,10 +48,10 @@ exec /bin/opkg-real --conf /etc/opkg.conf --offline-root / "$@"
         (lab/'tmp/repo/sing-box-tiny.ipk').write_bytes(old)
         (lab/'var/opkg-lists/fixture').write_text(control+f'Size: {len(old)}\nSHA256sum: {hashlib.sha256(old).hexdigest()}\nFilename: sing-box-tiny.ipk\n')
         inside('/bin/opkg','install','/tmp/repo/sing-box-tiny.ipk')
-        new,_=package('sing-box','1.13.21-200');(lab/'tmp/new.ipk').write_bytes(new)
+        new,_=package('sing-box','1.13.21-300');(lab/'tmp/new.ipk').write_bytes(new)
         catalog={'schema':1,'packages':[{'arch':'mipsel_24kc','manager':'opkg','profile':'full','releases':['24.10'],
             'url':'https://api.github.com/repos/Ktoto59/obhod-releases/releases/assets/1','sha256':hashlib.sha256(new).hexdigest(),
-            'bytes':len(new),'installedBytes':10000,'version':'1.13.21-200'}]}
+            'bytes':len(new),'installedBytes':10000,'version':'1.13.21-300'}]}
         (lab/'tmp/catalog.json').write_text(json.dumps(catalog))
         def stub(path,text):
             f=lab/path;f.unlink(missing_ok=True);f.write_text('#!/bin/sh\n'+text+'\n');f.chmod(0o755)
@@ -73,11 +73,11 @@ install_compat_core
 ''')
         (lab/'tmp/reject-core').touch();inside('/bin/sh','/tmp/test.sh',ok=False)
         assert '1.13.21-1' in inside('/bin/opkg','status','sing-box-tiny')
-        assert '1.13.21-obhod.2' not in inside('/usr/bin/sing-box','version')
+        assert '1.13.21-obhod.3' not in inside('/usr/bin/sing-box','version')
         (lab/'tmp/reject-core').unlink()
         inside('/bin/sh','/tmp/test.sh')
-        assert '1.13.21-obhod.2' in inside('/usr/bin/sing-box','version')
-        assert '1.13.21-200' in inside('/bin/opkg','status','sing-box')
+        assert '1.13.21-obhod.3' in inside('/usr/bin/sing-box','version')
+        assert '1.13.21-300' in inside('/bin/opkg','status','sing-box')
         inside('/bin/sh','/tmp/test.sh')
         assert (lab/'etc/obhod/settings.json').read_bytes()==settings
     print('PASS: real opkg verified rollback, tiny-to-full compatibility switch, exact old-version guard, repeat installation and profile preservation')

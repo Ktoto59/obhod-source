@@ -59,7 +59,10 @@ jobs:
           git init --quiet "$RUNNER_TEMP/core-tun"
           git -C "$RUNNER_TEMP/core-tun" fetch --depth 1 https://github.com/SagerNet/sing-tun f3b42b8b8e061ef849213a776d9fcf3d5f6ea239
           git -C "$RUNNER_TEMP/core-tun" checkout --detach FETCH_HEAD
-          python3 scripts/prepare-network-core.py --sing-box "$RUNNER_TEMP/core-box" --sing-tun "$RUNNER_TEMP/core-tun" --output "$RUNNER_TEMP/patched"
+          git init --quiet "$RUNNER_TEMP/core-sing"
+          git -C "$RUNNER_TEMP/core-sing" fetch --depth 1 https://github.com/SagerNet/sing 87773cc9c5b2a4e4fc05cbd2db304ba23ca13515
+          git -C "$RUNNER_TEMP/core-sing" checkout --detach FETCH_HEAD
+          python3 scripts/prepare-network-core.py --sing-box "$RUNNER_TEMP/core-box" --sing-tun "$RUNNER_TEMP/core-tun" --sing "$RUNNER_TEMP/core-sing" --output "$RUNNER_TEMP/patched"
       - name: Test DNS concurrency and ICMP classification
         shell: bash
         env:
@@ -67,6 +70,8 @@ jobs:
         run: |
           set -euo pipefail
           (cd "$RUNNER_TEMP/patched/source" && go test -mod=readonly -race ./dns/transport -run TestObhod -count=1)
+          (cd "$RUNNER_TEMP/patched/source" && go test -mod=readonly -race ./route -run TestObhod -count=1)
+          (cd "$RUNNER_TEMP/patched/sing" && go test -mod=readonly -race ./common/udpnat2 -run TestObhod -count=1)
           (cd "$RUNNER_TEMP/patched/sing-tun" && go test -mod=readonly -race ./ping -run TestObhod -count=1)
           sh core/build.sh "$RUNNER_TEMP/patched" "$RUNNER_TEMP/binaries" amd64 lite
           "$RUNNER_TEMP/binaries/sing-box-linux-amd64-lite" obhod-capabilities | grep -qx dns-pool-v1
