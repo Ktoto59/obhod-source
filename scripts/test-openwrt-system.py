@@ -74,7 +74,7 @@ def prepare():
     if database.exists():
         shutil.rmtree(database)
     inside('/usr/bin/apk', '--initdb', '--no-network', '--no-scripts', 'add', '--allow-untrusted', '/tmp/testdeps.apk',
-           '/tmp/obhod-0.1.15-r1.apk', '/tmp/luci-app-obhod-0.1.15-r1.apk')
+           '/tmp/obhod-0.1.16-r1.apk', '/tmp/luci-app-obhod-0.1.16-r1.apk')
     assert (LAB / 'www/luci-static/resources/view/obhod/overview.js').exists()
     assert (LAB / 'www/luci-static/resources/obhod/overview.css').exists()
     assert (LAB / 'etc/obhod').stat().st_mode & 0o777 == 0o700
@@ -336,11 +336,15 @@ echo '{}'
         assert len(call('logs')['text'].encode())<=32768
         assert call('clearLogs')['ok'] and call('logs')['text']==''
         # Both saved-state start and stop use short RPC calls.
-        for action in ['stop','start','stop']:
+        for action in ['stop','start','restart','stop']:
             assert call('service',{'action':action})['ok']
             deadline=time.monotonic()+10
             while (LAB/'var/lock/obhod-job.lock').exists() and time.monotonic()<deadline:time.sleep(.05)
-            assert call('status')['running']==(action=='start')
+            assert call('status')['running']==(action in ['start','restart'])
+        assert call('service',{'action':'restart'})['ok']
+        deadline=time.monotonic()+10
+        while (LAB/'var/lock/obhod-job.lock').exists() and time.monotonic()<deadline:time.sleep(.05)
+        assert call('status')['jobState']=='error' and not call('status')['running'], 'Restart cannot enable a stopped service'
     finally:
         server.shutdown();server.server_close();thread.join()
         shutil.copyfile(LAB/'tmp/real-ubus',LAB/'bin/ubus')
@@ -379,8 +383,8 @@ def lifecycle_tests():
 def installer_tests():
     directory = LAB / 'tmp/installer'
     directory.mkdir()
-    for name in ['install.sh', 'installer-plan.uc', 'package-lib.sh', 'core-compat.sh', 'core-select.uc', 'core-catalog.json', 'presets.tsv', 'SHA256SUMS', 'LICENSE', 'NOTICE', 'README.md', 'obhod-0.1.15-r1.apk',
-                 'luci-app-obhod-0.1.15-r1.apk', 'obhod_0.1.15-1_all.ipk', 'luci-app-obhod_0.1.15-1_all.ipk']:
+    for name in ['install.sh', 'installer-plan.uc', 'package-lib.sh', 'core-compat.sh', 'core-select.uc', 'core-catalog.json', 'presets.tsv', 'SHA256SUMS', 'LICENSE', 'NOTICE', 'README.md', 'obhod-0.1.16-r1.apk',
+                 'luci-app-obhod-0.1.16-r1.apk', 'obhod_0.1.16-1_all.ipk', 'luci-app-obhod_0.1.16-1_all.ipk']:
         shutil.copyfile(PACKAGES / name, directory / name)
     # Resource fixtures are confined to this disposable chroot.
     (LAB / 'proc').mkdir(exist_ok=True)
@@ -488,7 +492,7 @@ def installer_tests():
     assert state.read_text() == '{"existing":"profile"}'
     assert inside('/bin/sh', '-c', 'test -f /var/run/obhod/ready') == ''
     calls = (LAB / 'tmp/installer-calls').read_text()
-    assert 'apk update' in calls and 'apk --no-network add --allow-untrusted ./obhod-0.1.15-r1.apk' in calls
+    assert 'apk update' in calls and 'apk --no-network add --allow-untrusted ./obhod-0.1.16-r1.apk' in calls
     (LAB / 'etc/apk/world').unlink()
     (LAB / 'etc/openwrt_release').write_text("DISTRIB_ID='OpenWrt'\nDISTRIB_RELEASE='24.10.4'\n")
     opkg = LAB / 'bin/opkg'
@@ -498,8 +502,8 @@ def installer_tests():
     (LAB/'var/opkg-lists/fixture').write_text('Package: sing-box\nInstalled-Size: 33554432\nSize: 8388608\n\n')
     inside('/bin/sh', '/tmp/installer/install.sh', '--yes')
     calls = (LAB / 'tmp/installer-calls').read_text()
-    assert 'opkg update' in calls and 'opkg install ./obhod_0.1.15-1_all.ipk ./luci-app-obhod_0.1.15-1_all.ipk' in calls
-    shutil.copyfile(PACKAGES / 'obhod-openwrt-0.1.15.tar.gz', LAB / 'tmp/online-bundle.tar.gz')
+    assert 'opkg update' in calls and 'opkg install ./obhod_0.1.16-1_all.ipk ./luci-app-obhod_0.1.16-1_all.ipk' in calls
+    shutil.copyfile(PACKAGES / 'obhod-openwrt-0.1.16.tar.gz', LAB / 'tmp/online-bundle.tar.gz')
     script = (PACKAGES / 'install-online.sh').read_text().replace("BUNDLE_API_URL=''", "BUNDLE_API_URL='https://api.github.com/repos/example/releases/assets/1'")
     (LAB / 'tmp/online-installer.sh').write_text(script)
     downloader = '#!/bin/sh\nwhile [ "$#" -gt 0 ]; do case "$1" in --output|-O) cp /tmp/online-bundle.tar.gz "$2"; exit $?;; esac; shift; done\nexit 1\n'
@@ -516,7 +520,7 @@ def installer_tests():
     result = run(['chroot', LAB, '/bin/sh', '/tmp/online-installer.sh', '--yes'])
     assert result.returncode != 0 and calls_file.read_text() == before_download
     calls = calls_file.read_text()
-    with (directory / 'obhod_0.1.15-1_all.ipk').open('ab') as target:
+    with (directory / 'obhod_0.1.16-1_all.ipk').open('ab') as target:
         target.write(b'tampered')
     result = run(['chroot', LAB, '/bin/sh', '/tmp/installer/install.sh'])
     assert result.returncode != 0
@@ -531,7 +535,8 @@ if [ "$1 $2 $3" = 'call service set' ]; then
   command=$(jsonfilter -s "$4" -e '@.instances.task.command[0]')
   profile=$(jsonfilter -s "$4" -e '@.instances.task.command[2]')
   token=$(jsonfilter -s "$4" -e '@.instances.task.command[3]')
-  "$command" worker "$profile" "$token" </dev/null >/dev/null 2>&1 &
+  version=$(jsonfilter -s "$4" -e '@.instances.task.command[4]')
+  "$command" worker "$profile" "$token" "$version" </dev/null >/dev/null 2>&1 &
  fi
 fi
 echo '{}'
@@ -562,6 +567,8 @@ def core_job_tests():
             time.sleep(0.05)
         raise AssertionError('Core installer did not finish')
     assert not rpc('installCore', {'profile':'lite;reboot'})['ok']
+    assert not rpc('installCore', {'profile':'full','version':'1.13.21;reboot'})['ok']
+    assert not rpc('installCore', {'profile':'full','version':'1.13.21-obhod.999'})['ok']
     (LAB/'tmp/reject-worker-start').touch()
     assert not rpc('installCore', {'profile':'lite'})['ok']
     assert not (LAB/'var/lock/obhod-core.lock').exists() and not (LAB/'var/lock/obhod-apply.lock').exists()
@@ -569,6 +576,7 @@ def core_job_tests():
     (LAB/'tmp/skip-worker-start').touch()
     assert rpc('installCore', {'profile':'lite'})['ok']
     assert rpc('status', {})['coreBusy'], 'A newly scheduled worker gets a startup grace period'
+    assert not rpc('removeCore', {})['ok'], 'Removal cannot overlap an installation'
     old_token=(LAB/'var/lock/obhod-core.lock/token').read_text().strip()
     (LAB/'var/lock/obhod-core.lock/started').write_text('1\n')
     assert not rpc('status', {})['coreBusy'], 'A worker that never started cannot hold the lock forever'
@@ -681,8 +689,8 @@ esac
     previous = state.read_bytes()
     (LAB/'var/run/obhod/ready').unlink(missing_ok=True)
     (LAB/'tmp/free-flash').write_text('61000'); (LAB/'tmp/free-tmp').write_text('59000')
-    archive = (PACKAGES/'obhod-openwrt-0.1.15.tar.gz').read_bytes()
-    metadata = {'version':'0.1.15','tag':'openwrt-v0.1.15','bundleUrl':'https://api.github.com/repos/Ktoto59/obhod-releases/releases/assets/1','bundleSha256':hashlib.sha256(archive).hexdigest()}
+    archive = (PACKAGES/'obhod-openwrt-0.1.16.tar.gz').read_bytes()
+    metadata = {'version':'0.1.16','tag':'openwrt-v0.1.16','bundleUrl':'https://api.github.com/repos/Ktoto59/obhod-releases/releases/assets/1','bundleSha256':hashlib.sha256(archive).hexdigest()}
     (LAB/'tmp/update-bundle').write_bytes(archive)
     def write_metadata(data): (LAB/'tmp/update-metadata').write_text(json.dumps(data))
     def job(action):
@@ -696,7 +704,7 @@ esac
     write_metadata(metadata)
     result,message = job('check'); assert result == 'available', (result,message)
     assert state.read_bytes() == previous and not (LAB/'tmp/update-controls').exists()
-    for mutation in [{'bundleUrl':'https://example.org/evil'}, {'tag':'v0.18.0'}, {'version':'0.1.15;reboot'}, {'bundleSha256':'x'*64}]:
+    for mutation in [{'bundleUrl':'https://example.org/evil'}, {'tag':'v0.18.0'}, {'version':'0.1.16;reboot'}, {'bundleSha256':'x'*64}]:
         write_metadata({**metadata,**mutation}); result,message = job('install')
         assert result == 'error' and state.read_bytes() == previous
         assert not (LAB/'tmp/update-controls').exists()
@@ -718,7 +726,7 @@ esac
     (LAB/'tmp/update-bundle').write_bytes(archive); write_metadata(metadata)
     result,message=job('install')
     assert result=='done', (result,message,(LAB/'var/run/obhod/update-log').read_text()[-2500:])
-    assert (LAB/'usr/share/obhod/version').read_text().strip()=='0.1.15'
+    assert (LAB/'usr/share/obhod/version').read_text().strip()=='0.1.16'
     assert state.read_bytes()==previous
     # The updater releases its lock before the deferred rpcd reload finishes.
     deadline=time.monotonic()+3
@@ -748,7 +756,7 @@ def ipk_tests():
         result = run(['chroot', lab, '/bin/opkg', '--offline-root', '/', 'install', '/tmp/testdeps.ipk'])
         assert result.returncode == 0, result.stdout + result.stderr
         result = run(['chroot', lab, '/bin/opkg', '--offline-root', '/', 'install',
-                      '/tmp/obhod_0.1.15-1_all.ipk', '/tmp/luci-app-obhod_0.1.15-1_all.ipk'])
+                      '/tmp/obhod_0.1.16-1_all.ipk', '/tmp/luci-app-obhod_0.1.16-1_all.ipk'])
         assert result.returncode == 0, result.stdout + result.stderr
         assert (lab / 'usr/libexec/rpcd/obhod').exists()
         assert (lab / 'www/luci-static/resources/obhod/core.js').exists()
@@ -834,7 +842,7 @@ exec /bin/opkg-real --conf /etc/opkg.conf --offline-root / "$@"
         result=(lab/'var/run/obhod/update-state').read_text().strip()
         assert result=='done', (result,(lab/'var/run/obhod/update-log').read_text()[-2500:])
         assert profile.read_text()=='{"saved":"opkg profile"}'
-        assert (lab/'usr/share/obhod/version').read_text().strip()=='0.1.15'
+        assert (lab/'usr/share/obhod/version').read_text().strip()=='0.1.16'
     print('PASS: real OpenWrt 24.10 opkg installation of both IPK packages')
     print('PASS: native opkg tiny/full switching, verified predownload, failed-install rollback and tamper rejection')
     print('PASS: native opkg self-update from 0.1.4 preserves the saved profile')

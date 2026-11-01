@@ -25,7 +25,7 @@ worker_alive() {
 }
 
 [ "$1" = list ] && {
-	printf '%s\n' '{"status":{},"upload":{"action":"string","upload":"string","data":"string","index":0},"apply":{"settings":"string","start":true,"upload":"string"},"start":{},"stop":{},"subscription":{"url":"string"},"installCore":{"profile":"string"},"coreSizes":{},"update":{"action":"string"},"interfaces":{},"logs":{},"clearLogs":{},"diagnostics":{},"service":{"action":"string"},"diagnose":{}}'
+	printf '%s\n' '{"status":{},"upload":{"action":"string","upload":"string","data":"string","index":0},"apply":{"settings":"string","start":true,"upload":"string"},"start":{},"stop":{},"subscription":{"url":"string"},"installCore":{"profile":"string","version":"string"},"removeCore":{},"coreVersions":{},"coreSizes":{},"update":{"action":"string"},"interfaces":{},"logs":{},"clearLogs":{},"diagnostics":{},"service":{"action":"string"},"diagnose":{}}'
 	exit 0
 }
 [ "$1" = call ] || exit 1
@@ -95,6 +95,7 @@ case "$2" in
 		json_add_string coreFlavor "$(find_core)"
 		json_add_boolean wireguard "$(printf '%s' "$core_version" | grep -q with_wireguard && echo 1 || echo 0)"
 		json_add_boolean coreBusy "$([ -d /var/lock/obhod-core.lock ] && echo 1 || echo 0)"
+		json_add_string coreAction "$(cat "$RUN/core-action" 2>/dev/null)"
 		json_add_string coreState "$(cat "$RUN/core-state" 2>/dev/null)"
 		json_add_string coreMessage "$(cat "$RUN/core-message" 2>/dev/null)"
 		app_version=$(cat /usr/share/obhod/version 2>/dev/null)
@@ -119,6 +120,12 @@ case "$2" in
 		json_add_string routeCheckedAt "$(jsonfilter -i "$RUN/telemetry.json" -e '@.checkedAt' 2>/dev/null)"
 		json_add_boolean routeOk "$(jsonfilter -i "$RUN/telemetry.json" -e '@.ok' 2>/dev/null | grep -qx true && echo 1 || echo 0)"
 		json_dump
+		;;
+	coreVersions)
+		. /usr/libexec/obhod/package-lib.sh
+		manager=opkg; [ ! -f /etc/apk/world ] || manager=apk
+		detect_core_platform
+		ucode /usr/libexec/obhod/core-select.uc /usr/share/obhod/core-catalog.json "$compat_arch" "$manager" list "$compat_release"
 		;;
 	coreSizes)
 		. /usr/libexec/obhod/package-lib.sh
@@ -148,7 +155,7 @@ case "$2" in
 		;;
 	service|diagnose)
 		if [ "$2" = diagnose ]; then action=diagnostics
-		else action=$(jsonfilter -i "$request" -e '@.action' 2>/dev/null); case "$action" in start|stop|dns-prepare) ;; *) reply 0 'Недопустимое действие службы.'; exit 0 ;; esac; fi
+		else action=$(jsonfilter -i "$request" -e '@.action' 2>/dev/null); case "$action" in start|stop|restart|dns-prepare) ;; *) reply 0 'Недопустимое действие службы.'; exit 0 ;; esac; fi
 		if message=$(/usr/libexec/obhod/job start "$action" 2>&1); then reply 1
 		else reply 0 "$message"; fi
 		;;
@@ -158,10 +165,17 @@ case "$2" in
 		if message=$(/usr/libexec/obhod/update start "$action" 2>&1); then reply 1
 		else reply 0 "$message"; fi
 		;;
+	removeCore)
+		if message=$(/usr/libexec/obhod/core-install start remove 2>&1); then reply 1
+		else reply 0 "$message"; fi
+		;;
 	installCore)
 		profile=$(jsonfilter -i "$request" -e '@.profile' 2>/dev/null)
 		case "$profile" in lite|full) ;; *) reply 0 'Выберите допустимый набор протоколов.'; exit 0 ;; esac
-		if message=$(/usr/libexec/obhod/core-install start "$profile" 2>&1); then reply 1
+		version=$(jsonfilter -i "$request" -e '@.version' 2>/dev/null)
+		[ -n "$version" ] || version=auto
+		case "$version" in auto|1.13.21-obhod.2|1.13.21-obhod.3) ;; *) reply 0 'Неизвестная версия ядра.'; exit 0 ;; esac
+		if message=$(/usr/libexec/obhod/core-install start "$profile" "$version" 2>&1); then reply 1
 		else reply 0 "$message"; fi
 		;;
 	subscription)

@@ -16,7 +16,7 @@ app.setPath('userData', path.join(root, '.tmp', 'openwrt-ui-test'));
 
 app.whenReady().then(async () => {
   const window = new BrowserWindow({ show: false, width: 1180, height: 720, webPreferences: { contextIsolation: true, sandbox: true, backgroundThrottling: false } });
-  const timeout = setTimeout(() => { console.error('OpenWrt UI test timed out'); app.exit(1); }, 20000);
+  const timeout = setTimeout(() => { console.error('OpenWrt UI test timed out'); app.exit(1); }, 60000);
   try {
     await window.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent('<!doctype html><style>'+themeCSS+'</style><style>html{background:#222}body{font:14px sans-serif;margin:28px;padding:0;min-height:0;background:#222;color:#eee}#page{width:100%;max-width:1120px;margin:0 auto}</style><main id="page"></main>'));
     const profile = defaultRouterProfile();
@@ -60,7 +60,7 @@ app.whenReady().then(async () => {
       let coreBusy = false, coreFlavor = 'sing-box-tiny', wireguard = false;
       let updateBusy = false, updateAvailable = false, updateState = '', appVersion = '0.1.5', failStatus = false, poller;
       const updateRequests = [];
-      const coreRequests = [];
+      const coreRequests = [], coreVersionRequests=[];let removals=0,modalNodes=[];
       let jobBusy=false, jobState='', logBody='WARN: тестовая запись\\n';
       const serviceRequests=[], diagnosticRequests=[];
       const notifications = [];
@@ -96,14 +96,16 @@ app.whenReady().then(async () => {
             routeName:'Сервер из работающего ядра',routeDelay:'83',routeOk:true,routeCheckedAt:Math.floor(Date.now()/1000) };
         }
         if(spec.method==='interfaces') return {devices:[{name:'br-lan',label:'lan · br-lan · 192.0.2.1',up:true},{name:'br-guest',label:'guest · br-guest',up:true}]};
+        if(spec.method==='coreVersions') return {versions:['lite','full'].flatMap(profile=>[{profile,value:'1.13.21-obhod.3',recommended:true,downloadBytes:11010846,installedBytes:31160083},{profile,value:'1.13.21-obhod.2',recommended:false,downloadBytes:11000000,installedBytes:31000000}])};
+        if(spec.method==='removeCore') {removals++;coreBusy=true;return {ok:true};}
         if(spec.method==='coreSizes') return {lite:{downloadBytes:11010846,installedBytes:31160083},full:{downloadBytes:15601977,installedBytes:44487113}};
-        if(spec.method==='service') {serviceRequests.push(args[0]);if(args[0]==='dns-prepare')dnsPoolReady=true;else running=args[0]==='start';return {ok:true};}
+        if(spec.method==='service') {serviceRequests.push(args[0]);if(args[0]==='dns-prepare')dnsPoolReady=true;else running=args[0]==='start' || args[0]==='restart';return {ok:true};}
         if(spec.method==='diagnose') {diagnosticRequests.push(true);jobBusy=true;jobState='running';return {ok:true};}
-        if(spec.method==='diagnostics') return {checks:[{name:'HTTPS через подключение',ok:true,message:'83 мс'}],note:'Проверьте шлюз клиента.'};
+        if(spec.method==='diagnostics') return {checks:[{name:'HTTPS через подключение',ok:true,message:'83 мс'},{name:'DNS',ok:false,message:'Нет ответа'}],note:'Проверьте шлюз клиента.'};
         if(spec.method==='logs') {logRequests++;return {text:logBody};}
         if(spec.method==='clearLogs') {logBody='';return {ok:true};}
         if (spec.method === 'update') { updateRequests.push(args[0]); if(args[0]==='check') {updateAvailable=true; updateState='available';} else {updateBusy=true; updateState='running';} return {ok:true}; }
-        if (spec.method === 'installCore') { coreRequests.push(args[0]); coreBusy = true; return { ok: true }; }
+        if (spec.method === 'installCore') { coreRequests.push(args[0]);coreVersionRequests.push(args[1]); coreBusy = true; return { ok: true }; }
         if (spec.method === 'apply') { assert(args[0]==='' && args[2]==='test-upload','Apply references the staged profile'); applied = JSON.parse(new TextDecoder().decode(Uint8Array.from(staged.join(''),c=>c.charCodeAt(0)))); running = args[1]; saves++; return { ok: true }; }
         if (spec.method === 'stop') { running = false; return { ok: true }; }
         if (spec.method === 'subscription') return { ok: true, base64: btoa(btoa('socks5://192.0.2.10:1080#Duplicate\\nsocks5://192.0.2.55:1080#New')) };
@@ -115,7 +117,7 @@ app.whenReady().then(async () => {
         if(target) target.disabled=true;
         handlerWork=Promise.resolve(fn.apply(owner,args)).finally(()=>{if(target)target.disabled=false;});
         return handlerWork;
-      }, showModal: () => {}, hideModal: () => {},
+      }, showModal: (_,nodes) => {modalNodes=nodes;}, hideModal: () => {modalNodes=[];},
         addNotification: (_, node) => notifications.push(node.textContent) };
       const page = new Function('view','rpc','fs','ui','poll','core','E','L', ${JSON.stringify(source)})(view,rpc,fs,ui,{add:callback=>{poller=callback;}},core,E,pageL);
       document.getElementById('page').appendChild(page.render(await page.load()));
@@ -124,6 +126,7 @@ app.whenReady().then(async () => {
       assert(page.activeTab === 'overview' && page.panels.connections.hidden, 'Only overview initially visible');
       assert(!page.ipv6.checked && page.manageDns.checked, 'Native LuCI preserves false checkbox values');
       assert(!page.dnsMode && !page.root.textContent.includes('прежний режим'), 'FakeIP is the only DNS mode');
+      assert(page.coreVersion.value==='1.13.21-obhod.3' && page.coreVersion.options.length===2,'Versions match the selected kernel flavor');
       assert(page.protocolHelp.textContent.includes('29,7') && page.protocolHelp.textContent.includes('10,5'), 'Package sizes come from router metadata');
       page.selectTab('rules');
       page.domainText.value=Array.from({length:1000},(_,i)=>'site'+i+'.example').join('\\n');
@@ -199,9 +202,12 @@ app.whenReady().then(async () => {
       assert(page.saveButton.textContent==='Применить изменения' && page.applyButton.hidden && page.cancelButton.hidden,'Running service has a single apply action');
       page.serviceButton.click();await handlerWork;assert(!running && page.serviceButton.textContent==='Включить','Actual click stops service even when LuCI disables the button');
       page.serviceButton.click();await handlerWork;assert(running && serviceRequests.at(-1)==='start' && saves===1,'Separate start uses saved configuration');
+      page.restartButton.click();await handlerWork;assert(running && serviceRequests.at(-1)==='restart' && saves===1,'Restart uses the saved configuration');
       assert(page.liveRoute.textContent==='Сервер из работающего ядра' && page.liveDelay.textContent==='83 мс','Header displays actual selected route and delay');
       await page.runDiagnostics();assert(diagnosticRequests.length===1 && page.diagnosticButton.disabled,'Background diagnostics starts');
       jobBusy=false;jobState='done';page.updateStatus(await rpc.declare({method:'status'})());await page.refreshDiagnostics();
+      assert(page.diagnosticRows.querySelector('.is-ok .ob-check-ok').textContent.includes('✓') && page.diagnosticRows.querySelector('.is-fail .ob-check-fail').textContent.includes('✕'),'Diagnostic outcomes have colored cards and text indicators');
+      assert(getComputedStyle(page.diagnosticRows.querySelector('.is-ok')).borderLeftColor!==getComputedStyle(page.diagnosticRows.querySelector('.is-fail')).borderLeftColor,'Success and failure cards have different colors');
       assert(page.diagnosticRows.textContent.includes('83 мс') && logRequests===0,'Diagnostics does not fetch a collapsed journal');
       page.selectTab('diagnostics');await poller();assert(logRequests===0,'Polling skips a collapsed journal');
       var logOpened=new Promise(resolve=>page.logDetails.addEventListener('toggle',resolve,{once:true}));
@@ -218,6 +224,7 @@ app.whenReady().then(async () => {
       await page.operation(rpc.declare({method:'stop'}));
       page.protocols.value = 'wireguard';
       await page.installProtocols();
+      assert(coreVersionRequests[0]==='1.13.21-obhod.3','Selected kernel version reaches the install RPC');
       assert(coreRequests[0] === 'full' && page.coreButton.disabled, 'WireGuard installs full core asynchronously');
       page.selectTab('rules');page.domainText.value='during-install.example';page.markDirty();
       assert(!page.operationNotice.hidden && page.operationTitle.textContent.includes('протоколов') && !page.cancelButton.disabled,'Installation progress is visible on every tab and cancel remains available');
@@ -227,9 +234,10 @@ app.whenReady().then(async () => {
       assert(saves === 1 && notifications.at(-1).includes('окончания установки'), 'Save blocked during package operation');
       coreBusy = false; coreFlavor = 'sing-box'; wireguard = true;
       page.updateStatus(await rpc.declare({method:'status'})());
-      page.protocols.value = 'proxy';
+      page.protocols.value = 'proxy';page.updateCoreVersions();page.coreVersion.value='1.13.21-obhod.2';page.updateProtocolHelp();
+      assert(page.coreVersionHelp.textContent.includes('отката'),'Older version explains rollback limitations');
       await page.installProtocols();
-      assert(coreRequests[1] === 'lite', 'Proxy selection installs tiny');
+      assert(coreRequests[1] === 'lite' && coreVersionRequests[1]==='1.13.21-obhod.2', 'Proxy selection installs the chosen older tiny version');
       coreBusy = false; page.updateStatus(await rpc.declare({method:'status'})()); page.markDirty();
       await page.updateObhod('check');
       assert(updateRequests[0]==='check' && !page.updateInstall.hidden && page.updateInstall.disabled, 'Update check shows release and protects unsaved drafts');
@@ -259,6 +267,9 @@ app.whenReady().then(async () => {
       initial.render([{ configured: false }, '', JSON.stringify({version:1,presetIds:['discord','telegram']})]);
       assert(initial.profile.tunnels.length === 0 && initial.presetInputs.discord.checked && initial.presetInputs.telegram.checked, 'Installer defaults appear without bundled tunnels');
       assert(!initial.group.checked && !initial.ipv6.checked && !initial.presetInputs.youtube.checked, 'Fresh settings do not check every false boolean');
+      const fullPage = new Function('view','rpc','fs','ui','poll','core','E','L', ${JSON.stringify(source)})(view,rpc,fs,ui,{add:()=>{}},core,E,pageL);
+      fullPage.render([{coreFlavor:'sing-box',configured:false},'', '', {}, {},await rpc.declare({method:'coreVersions'})()]);
+      assert(fullPage.protocols.value==='all' && fullPage.coreVersion.value==='1.13.21-obhod.3','A full core remains the selected flavor after page reload');
       assert(!initial.dnsMode,'New installations do not offer legacy DNS');
       page.tunnelRows.forEach((row,index)=>{row.input.checked=index<2;}); page.updateAll();
       page.updateStatus({running:false,version:'sing-box version 1.13.21',coreFlavor:'sing-box-tiny',wireguard:false});
@@ -282,11 +293,15 @@ app.whenReady().then(async () => {
       page.dnsUpstreams.value='invalid endpoint';page.markDirty();await page.save(false);
       assert(saves===beforePoolSaves+1,'Invalid DNS group does not overwrite saved settings');
       page.cancelChanges();assert(page.dnsUpstreams.value.includes('1.0.0.1') && !page.dirty,'Cancel restores DNS group editor');
-      return { nativeLoader, nativeDOM: !!nativeDOM, dnsSettings: true, dnsPool: true, interfaceDiscovery: true, serviceToggle: true, diagnostics: true, logs: true, routeLatency: true, selfUpdate: true, standaloneRPC: true, pollingRecovery: true, tabs: true, checkboxDefaults: true, presetCompatibility: true, serverSearch: true, selectAll: true, subscriptionImport: true, duplicates: true, routerConfig: true, validation: true, longNames: true, profileReadFailure: true, installerDefaults: true, protocolInstallation: true };
+      coreBusy=false;running=false;page.updateStatus(await rpc.declare({method:'status'})());
+      page.removeCoreButton.click();await handlerWork;assert(removals===0 && modalNodes.length,'Core removal asks for confirmation');
+      var confirm=modalNodes[1].querySelector('button:last-child');confirm.click();await handlerWork;assert(removals===1 && coreBusy,'Confirmed removal starts an asynchronous core operation');
+      coreBusy=false;coreFlavor='';page.updateStatus(await rpc.declare({method:'status'})());assert(page.removeCoreButton.disabled,'Unmanaged or absent core cannot be deleted');
+      return { coreVersions:true,coreRemoval:true,serviceRestart:true,diagnosticColors:true,nativeLoader, nativeDOM: !!nativeDOM, dnsSettings: true, dnsPool: true, interfaceDiscovery: true, serviceToggle: true, diagnostics: true, logs: true, routeLatency: true, selfUpdate: true, standaloneRPC: true, pollingRecovery: true, tabs: true, checkboxDefaults: true, presetCompatibility: true, serverSearch: true, selectAll: true, subscriptionImport: true, duplicates: true, routerConfig: true, validation: true, longNames: true, profileReadFailure: true, installerDefaults: true, protocolInstallation: true };
     })()`);
     console.log(`OPENWRT_UI_TEST ${JSON.stringify(result)}`);
     const screenshots = path.join(root, '.tmp', 'openwrt-ui-preview');
-    const paint = async () => { await window.webContents.executeJavaScript('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))'); await new Promise(resolve=>setTimeout(resolve,150)); };
+    const paint = async () => { await window.webContents.executeJavaScript('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))'); await new Promise(resolve=>setTimeout(resolve,500)); };
     fs.mkdirSync(screenshots, {recursive:true});
     window.setContentSize(1180, 1000);
     for (const tab of ['overview','connections','rules','protocols','network','diagnostics']) {

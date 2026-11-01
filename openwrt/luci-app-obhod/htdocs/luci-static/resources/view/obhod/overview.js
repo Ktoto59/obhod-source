@@ -11,7 +11,9 @@ var apply = rpc.declare({ object: 'obhod', method: 'apply', params: ['settings',
 var upload = rpc.declare({ object: 'obhod', method: 'upload', params: ['action', 'upload', 'data', 'index'], nobatch: true });
 var stop = rpc.declare({ object: 'obhod', method: 'stop', nobatch: true });
 var subscription = rpc.declare({ object: 'obhod', method: 'subscription', params: ['url'], nobatch: true });
-var installCore = rpc.declare({ object: 'obhod', method: 'installCore', params: ['profile'], nobatch: true });
+var installCore = rpc.declare({ object: 'obhod', method: 'installCore', params: ['profile', 'version'], nobatch: true });
+var removeCore = rpc.declare({ object: 'obhod', method: 'removeCore', nobatch: true });
+var coreVersions = rpc.declare({ object: 'obhod', method: 'coreVersions', nobatch: true });
 var coreSizes = rpc.declare({ object: 'obhod', method: 'coreSizes', nobatch: true });
 var update = rpc.declare({ object: 'obhod', method: 'update', params: ['action'], nobatch: true });
 var interfaces = rpc.declare({ object: 'obhod', method: 'interfaces', nobatch: true });
@@ -69,8 +71,8 @@ return view.extend({
         if (state.configured) throw new Error('Не удалось прочитать сохранённые подключения. Проверьте доступ к настройкам; профиль не изменён.');
         return '';
       }).then(function(text) {
-        return Promise.all([fs.read('/etc/obhod/defaults.json').catch(function() { return ''; }), interfaces().catch(function() { return {devices:[]}; }), coreSizes().catch(function(){return {};})])
-          .then(function(extra) { return [state, text, extra[0], extra[1], extra[2]]; });
+        return Promise.all([fs.read('/etc/obhod/defaults.json').catch(function() { return ''; }), interfaces().catch(function() { return {devices:[]}; }), coreSizes().catch(function(){return {};}), coreVersions().catch(function(){return {unavailable:true};})])
+          .then(function(extra) { return [state, text, extra[0], extra[1], extra[2], extra[3]]; });
       });
     });
   },
@@ -79,6 +81,7 @@ return view.extend({
     var self = this, saved;
     this.loadedVersion = data[0].obhodVersion;
     this.coreSizes = data[4] || {};
+    this.coreCatalog = data[5] || {unavailable:true};
     try { saved = data[1] ? JSON.parse(data[1]) : {}; }
     catch (_) { throw new Error('Не удалось прочитать профиль Обхода. Сохранённые настройки не изменены.'); }
     this.profile = saved.profile || core.defaults();
@@ -101,12 +104,15 @@ return view.extend({
     this.overviewLiveRoute = E('strong', { 'class': 'ob-overview-route-name' });
     this.overviewLiveDelay = E('span', { 'class': 'ob-live-delay' });
     this.coreState = E('p', { 'class': 'ob-core-state', 'aria-live': 'polite' });
-    this.protocols = E('select', { change: function() { self.updateProtocolHelp(); } }, [E('option', { value: 'proxy' }, 'Прокси · облегчённое ядро'),
+    this.protocols = E('select', { change: function() { self.updateCoreVersions(); self.updateProtocolHelp(); } }, [E('option', { value: 'proxy' }, 'Прокси · облегчённое ядро'),
       E('option', { value: 'wireguard' }, 'WireGuard · полное ядро'), E('option', { value: 'all' }, 'Все протоколы · полное ядро')]);
     this.protocols.value = data[0].coreFlavor === 'sing-box' ? 'all' : 'proxy';
     this.protocolHelp = E('p', { 'class': 'ob-note' });
+    this.coreVersion = E('select', { change: function() { self.updateProtocolHelp(); } });
+    this.coreVersionHelp = E('p', { 'class': 'ob-help' });
     this.coreHint = E('p', { 'class': 'ob-help' });
     this.coreButton = E('button', { type: 'button', 'class': 'cbi-button ob-button ob-primary', click: ui.createHandlerFn(this, this.installProtocols) }, 'Установить выбранное ядро');
+    this.removeCoreButton = E('button', { type:'button', 'class':'cbi-button ob-button ob-danger', click:ui.createHandlerFn(this,this.confirmRemoveCore) }, 'Удалить ядро');
     this.importMode = E('select', {}, [E('option', { value: 'subscription' }, 'Подписка V2Ray'),
       E('option', { value: 'connection' }, 'Одна ссылка подключения'), E('option', { value: 'wireguard' }, 'WireGuard .conf')]);
     this.importText = E('textarea', { rows: 4, placeholder: 'Вставьте URL подписки, ссылки или Base64…', autocomplete: 'off', spellcheck: 'false' });
@@ -276,7 +282,8 @@ return view.extend({
     this.panels.rules.appendChild(card('Внешние списки', 'Бинарный .srs или source .json в формате sing-box.', [field('Ссылки на списки', this.remoteText, 'HTTPS-ссылки на .srs или .json, по одной в строке. Домены из обычного текста вставляйте в «Домены и сайты».'),
       E('details',{'class':'ob-details'},[E('summary',{},'Примеры форматов'),E('pre',{'class':'ob-code'},'Домены: example.org\nПодсети: 203.0.113.0/24\nВнешний список: https://example.org/rules.srs\nSource JSON: {"version":3,"rules":[{"domain_suffix":["example.org"]}]}')]) ]));
     this.panels.protocols.appendChild(card('Ядро протоколов', 'Выберите, какие подключения будут доступны на роутере.', [this.coreState,
-      field('Набор протоколов', this.protocols), this.protocolHelp, this.coreButton, this.coreHint,
+      field('Набор протоколов', this.protocols), field('Версия ядра',this.coreVersion),this.coreVersionHelp,this.protocolHelp,
+      E('div',{'class':'ob-inline-actions'},[this.coreButton,this.removeCoreButton]), this.coreHint,
       E('details', { 'class': 'ob-details' }, [E('summary', {}, 'О размере установки'), E('p', { 'class': 'ob-help' }, 'Прокси используют sing-box-tiny, WireGuard — полный sing-box. На поддерживаемых MIPS/ARM64 автоматически устанавливается совместимое ядро Обхода с исправлением таблиц маршрутизации и встроенными DNS-группами. Протоколы входят в общее ядро: выбор одного не уменьшает его дальше. Перед установкой проверяется место; малый объём ОЗУ вызывает предупреждение.')]) ]));
     this.panels.network.appendChild(card('Локальная сеть', 'Выберите входящие LAN/guest-интерфейсы. WAN обычно добавлять не нужно.', [field('Интерфейсы роутера',this.interfaceSelect),field('Выбранные устройства / ручной ввод', this.interfaces, 'Обычно br-lan. Несколько имён укажите через запятую.')]));
     this.dnsSingleFields = E('div',{'class':'ob-grid'},[field('Провайдер',this.dnsPreset),field('Протокол',this.dnsProtocol),field('DNS-сервер',this.dnsServer),field('Bootstrap IPv4',this.dnsBootstrap),this.dnsPathField]);
@@ -301,6 +308,7 @@ return view.extend({
       switchField('Подробный журнал',this.verboseLogs,'По умолчанию сохраняются только предупреждения и ошибки.'),
       this.logDetails ]));
     this.serviceButton = E('button', { type: 'button', 'class': 'cbi-button ob-button ob-service-button', click: ui.createHandlerFn(this, this.toggleService) }, 'Включить');
+    this.restartButton = E('button', { type:'button', 'class':'cbi-button ob-button', click:ui.createHandlerFn(this,this.restartService) }, 'Перезапустить');
     this.applyButton = E('button', { type: 'button', 'class': 'cbi-button ob-button ob-primary', click: ui.createHandlerFn(this, function() { return self.save(true); }) }, 'Сохранить и включить');
     this.saveButton = E('button',{type:'button','class':'cbi-button ob-button ob-primary',click:ui.createHandlerFn(this,function(){return self.save(false);})},'Сохранить');
     this.cancelButton = E('button',{type:'button','class':'cbi-button ob-button',click:ui.createHandlerFn(this,this.cancelChanges)},'Отменить');
@@ -311,7 +319,7 @@ return view.extend({
     this.root = E('div', { 'class': 'cbi-map obhod-app' }, [E('link', { rel: 'stylesheet', href: L.resource('obhod/overview.css') }),
       E('header', { 'class': 'ob-header' }, [E('div', { 'class': 'ob-brand' }, [E('span', { 'class': 'ob-mark', 'aria-hidden': 'true' }, '↗'),
         E('div', {}, [E('h2', {}, 'Обход'), E('p', { 'class': 'ob-help' }, 'Ваш маршрут к нужным сайтам')])]),
-        E('div', { 'class': 'ob-header-status' }, [this.state, this.statusDetail, this.routeDetail, this.serviceButton])]),
+        E('div', { 'class': 'ob-header-status' }, [this.state, this.statusDetail, this.routeDetail, E('div',{'class':'ob-service-actions'},[this.restartButton,this.serviceButton])])]),
       this.operationNotice,nav, panels, this.footer ]);
     function changed(event) { if (![self.serverSearch,self.domainSearch,self.domainEntry,self.domainView].includes(event.target) && !self.panels.protocols.contains(event.target)) self.markDirty(); }
     this.root.addEventListener('input',changed);this.root.addEventListener('change',changed);
@@ -320,7 +328,7 @@ return view.extend({
       this.root.classList.toggle('ob-dark', (Number(background[0]) * 299 + Number(background[1]) * 587 + Number(background[2]) * 114) / 1000 < 128);
     } else this.root.classList.toggle('ob-dark', window.matchMedia('(prefers-color-scheme: dark)').matches);
     this.renderTunnels();
-    this.updatePresets(); this.updateProtocolHelp(); this.updateDnsFields(); this.selectTab('overview');
+    this.updatePresets(); this.updateCoreVersions(); this.updateProtocolHelp(); this.updateDnsFields(); this.selectTab('overview');
     this.updateStatus(data[0]);
     this.captureDraft();
     poll.add(function() { return status().then(function(value) { self.updateStatus(value); if(self.activeTab==='diagnostics') return self.refreshDiagnostics(); }).catch(function() {
@@ -343,10 +351,16 @@ return view.extend({
     this.overviewLiveRoute.textContent = this.liveRoute.textContent;
     this.overviewLiveDelay.textContent = this.liveDelay.textContent;
     this.routeDetail.title = fresh ? 'HTTPS-проверка: ' + new Date(Number(value.routeCheckedAt)*1000).toLocaleTimeString('ru-RU') : 'Проверка маршрута выполняется раз в 30 секунд.';
-    this.coreState.textContent = (value.coreFlavor || (value.version ? 'Своё ядро sing-box' : 'Ядро не установлено'))
+    this.coreState.textContent = (value.coreFlavor || (value.version ? 'Своё ядро sing-box' : 'Ядро не установлено')) + (value.version?' · '+value.version.replace(/^sing-box version /,''):'')
       + (value.coreMessage ? ' · ' + value.coreMessage : '');
-    this.coreButton.disabled = !!(value.running || value.coreBusy || value.updateBusy || value.jobBusy);
-    this.protocols.disabled = !!value.coreBusy;
+    var busy=!!(value.coreBusy || value.updateBusy || value.jobBusy);
+    this.coreButton.disabled = !!(value.running || value.enabled || busy || this.coreCatalog.unavailable);
+    this.removeCoreButton.disabled=!!(value.running || value.enabled || busy || !value.coreFlavor);
+    this.removeCoreButton.title=value.running || value.enabled?'Сначала выключите Обход.':'Подключения и списки сохранятся.';
+    this.protocols.disabled = busy;this.coreVersion.disabled=busy || !!this.coreCatalog.unavailable;
+    this.restartButton.hidden=!value.running;
+    this.restartButton.disabled=busy || !value.running;
+    this.restartButton.title='Перезапуск с сохранёнными настройками. Несохранённые изменения не применяются.';
     this.coreHint.textContent = value.coreBusy ? 'Идёт установка. Состояние обновляется автоматически.' : value.running
       ? 'Перед сменой ядра выключите Обход кнопкой вверху.' : 'После установки сохраните настройки и включите Обход.';
     this.updateSummary();
@@ -362,7 +376,7 @@ return view.extend({
     this.dnsPrepareButton.disabled = busy;
     this.dnsPrepareHint.textContent = state.dnsPoolNative ? 'DNS-группы работают внутри сетевого ядра.' : state.dnsPoolReady ? 'DNS-группы готовы к работе.' : 'Для групп один раз установите небольшой дополнительный компонент из репозитория OpenWrt.';
     this.operationNotice.hidden=!busy;
-    this.operationTitle.textContent=state.coreBusy?'Установка ядра протоколов':state.updateBusy?'Обновление Обхода':'Операция службы';
+    this.operationTitle.textContent=state.coreBusy?(state.coreAction==='remove'?'Удаление ядра':'Установка ядра протоколов'):state.updateBusy?'Обновление Обхода':state.jobAction==='restart'?'Перезапуск службы':'Операция службы';
     this.operationMessage.textContent=((state.coreBusy?state.coreMessage:state.updateBusy?state.updateMessage:state.jobMessage) || 'Выполняется операция…')
       + (state.coreBusy?' Переключение разделов и редактирование доступны. Сохранить настройки и включить службу можно после установки.':'');
     var installing = !!state.updateBusy || state.updateState === 'running';
@@ -447,6 +461,11 @@ return view.extend({
     return this.operation(function(){return service(action);});
   },
 
+  restartService: function() {
+    if(!this.lastStatus.running || this.lastStatus.coreBusy || this.lastStatus.updateBusy || this.lastStatus.jobBusy) return Promise.resolve();
+    return this.operation(function(){return service('restart');});
+  },
+
   applyDnsPreset: function() {
     var preset=DNS_PRESETS[this.dnsPreset.value], protocol=this.dnsProtocol.value;
     if(preset) { this.dnsServer.value=protocol==='https'?preset.https[0]:protocol==='tls'?preset.tls:preset.plain;
@@ -466,8 +485,8 @@ return view.extend({
     this.diagnosticsLoading=true;
     this.diagnosticsPromise=diagnostics().then(function(result){
       self.diagnosticRows.replaceChildren();
-      (result.checks || []).forEach(function(check){ self.diagnosticRows.appendChild(E('div',{'class':'ob-diagnostic-row'},[
-        E('strong',{},check.name),E('span',{'class':check.ok?'ob-check-ok':'ob-check-fail'},check.ok?'Готово':'Проверьте'),E('p',{'class':'ob-help'},check.message)])); });
+      (result.checks || []).forEach(function(check){ self.diagnosticRows.appendChild(E('div',{'class':'ob-diagnostic-row '+(check.ok?'is-ok':'is-fail')},[
+        E('strong',{},check.name),E('span',{'class':check.ok?'ob-check-ok':'ob-check-fail'},check.ok?'✓ Готово':'✕ Требует внимания'),E('p',{'class':'ob-help'},check.message)])); });
       if(result.note) self.diagnosticRows.appendChild(E('p',{'class':'ob-note'},result.note));
     }).catch(function(){self.diagnosticMessage.textContent='Не удалось прочитать диагностику. Повторите запрос.';}).finally(function(){self.diagnosticsLoading=false;});
     return this.diagnosticsPromise;
@@ -561,12 +580,27 @@ return view.extend({
     this.renderTunnels();this.updatePresets();this.updateDnsFields();this.renderDomains();this.markDirty(true);
   },
 
+  updateCoreVersions: function() {
+    var previous=this.coreVersion.value, profile=this.protocols.value==='proxy'?'lite':'full';
+    var rows=(this.coreCatalog.versions || []).filter(function(row){return row.profile===profile;});
+    this.coreVersion.replaceChildren();
+    if(this.coreCatalog.unavailable) this.coreVersion.appendChild(E('option',{value:''},'Не удалось получить версии — обновите страницу'));
+    else if(!rows.length) this.coreVersion.appendChild(E('option',{value:'auto'},'Из репозитория OpenWrt'+(this.coreSizes[profile]?.version?' · '+this.coreSizes[profile].version:'')));
+    else rows.forEach(function(row){this.coreVersion.appendChild(E('option',{value:row.value},row.value+(row.recommended?' · рекомендуется':' · предыдущая версия')));},this);
+    if(rows.some(function(row){return row.value===previous;})) this.coreVersion.value=previous;
+    else if(rows.length) this.coreVersion.value=(rows.find(function(row){return row.recommended;}) || rows[0]).value;
+  },
+
   updateProtocolHelp: function() {
     this.protocolHelp.textContent = this.protocols.value === 'proxy'
       ? 'VLESS/Reality, Shadowsocks, Trojan, Hysteria2, TUIC, AnyTLS, SOCKS и HTTP. Подходит для роутеров с небольшим объёмом памяти.'
       : this.protocols.value === 'wireguard' ? 'Поддержка WireGuard. Требуется полное ядро; прокси-протоколы также останутся доступны.'
         : 'Прокси-протоколы и WireGuard.';
-    var size=this.coreSizes[this.protocols.value==='proxy'?'lite':'full'];
+    var profile=this.protocols.value==='proxy'?'lite':'full', selected=(this.coreCatalog.versions || []).find(function(row){return row.profile===profile && row.value===this.coreVersion.value;},this);
+    var size=selected || this.coreSizes[profile];
+    this.coreVersionHelp.textContent=this.coreCatalog.unavailable?'Установка недоступна, пока не загружен каталог версий.':selected && !selected.recommended
+      ?'Предыдущая сборка для отката. В ней отсутствуют последние исправления DNS и UDP. Подключения сохранятся.'
+      :selected?'Совместимая сборка Обхода для вашего роутера. Скачивание проверяется по SHA-256.':'Будет установлен пакет, доступный в репозитории вашей версии OpenWrt.';
     function mb(bytes){return (bytes/1048576).toLocaleString('ru-RU',{maximumFractionDigits:1});}
     this.protocolHelp.textContent += size
       ? ' Скачивание ≈ '+mb(size.downloadBytes)+' МБ; после распаковки ≈ '+mb(size.installedBytes)+' МБ. На flash со сжатием размер может быть меньше. Зависимости учитываются при установке.'
@@ -629,14 +663,28 @@ return view.extend({
 
   installProtocols: function() {
     var self = this;
-    if (this.lastStatus.running || this.lastStatus.coreBusy || this.lastStatus.updateBusy || this.lastStatus.jobBusy) return Promise.resolve();
+    if (this.lastStatus.running || this.lastStatus.enabled || this.lastStatus.coreBusy || this.lastStatus.updateBusy || this.lastStatus.jobBusy || this.coreCatalog.unavailable) return Promise.resolve();
     var profile = this.protocols.value === 'proxy' ? 'lite' : 'full';
     return this.operation(function() {
-      return installCore(profile).then(function(result) {
+      return installCore(profile,self.coreVersion.value).then(function(result) {
         if (result.ok) ui.addNotification(null, E('p', {}, 'Установка запущена. Состояние обновится автоматически; страницу можно оставить открытой.'), 'info');
         return result;
       });
     });
+  },
+
+  confirmRemoveCore: function() {
+    var self=this;
+    var state=this.lastStatus;
+    if(state.running || state.enabled || state.coreBusy || state.updateBusy || state.jobBusy || !state.coreFlavor) return Promise.resolve();
+    ui.showModal('Удалить ядро sing-box?',[
+      E('p',{},'Обход не сможет запускаться до повторной установки ядра. Сохранённые подключения, DNS и списки останутся на роутере.'),
+      E('div',{'class':'right ob-inline-actions'},[
+        E('button',{type:'button','class':'cbi-button',click:function(){ui.hideModal();}},'Отмена'),
+        E('button',{type:'button','class':'cbi-button ob-button ob-danger',click:ui.createHandlerFn(this,function(){
+          ui.hideModal();return self.operation(function(){return removeCore();});
+        })},'Удалить ядро')])]);
+    return Promise.resolve();
   },
 
   updateAll: function() {

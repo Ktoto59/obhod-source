@@ -13,6 +13,13 @@ find_core() {
 		opkg status 'sing-box*' 2>/dev/null | awk '/^Package:/ {p=$2} /^Status:.* installed$/ && (p=="sing-box" || p=="sing-box-tiny") {print p; exit}'
 	fi
 }
+detect_core_platform() {
+	compat_release=$(. /etc/openwrt_release; printf '%s' "${DISTRIB_RELEASE:-}")
+	case "$compat_release" in 24.10|24.10.*) compat_release=24.10;; 25.12|25.12.*) compat_release=25.12;; esac
+	if [ "$manager" = apk ] && [ -s /etc/apk/arch ]; then compat_arch=$(awk 'NF{print $1;exit}' /etc/apk/arch)
+	elif [ "$manager" = apk ]; then compat_arch=$(. /etc/openwrt_release; printf '%s' "${DISTRIB_ARCH:-}")
+	else compat_arch=$(opkg print-architecture | awk '$1=="arch" && $2!="all" && $2!="noarch" && $3>=n {n=$3;a=$2} END{print a}'); fi
+}
 free_kb() { df -Pk "$1" | awk 'NR>1 {v=$4} END {if(v ~ /^[0-9]+$/)print v;else exit 1}'; }
 read_resources() {
 	ram_total=$(awk '$1=="MemTotal:" {print $2}' /proc/meminfo)

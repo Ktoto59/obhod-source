@@ -140,10 +140,17 @@
 .obhod-app .ob-log { max-height: 340px; overflow-y: auto; margin-top: 16px; }
 .ob-import-hint { padding: 0 24px 20px; }
 .ob-diagnostic-rows { margin-top: 16px; }
-.ob-diagnostic-row { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 5px 12px; padding: 13px 0; border-bottom: 1px solid var(--ob-border); }
+.ob-diagnostic-row { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 5px 12px; padding: 13px 15px; margin-bottom: 9px; border: 1px solid var(--ob-border); border-left-width: 4px; border-radius: 8px; }
+.ob-diagnostic-row.is-ok { border-left-color: var(--ob-accent); background: var(--ob-tint); }
+.ob-diagnostic-row.is-fail { border-left-color: var(--ob-danger); background: color-mix(in srgb, var(--ob-danger) 9%, var(--ob-card)); }
+.ob-diagnostic-row.is-ok > strong { color: var(--ob-accent); }
+.ob-diagnostic-row.is-fail > strong { color: var(--ob-danger); }
 .ob-diagnostic-row p { grid-column: 1 / -1; }
 .ob-check-ok { font-size: 12px; color: var(--ob-accent); }
 .ob-check-fail { font-size: 12px; color: var(--ob-danger); }
+.ob-service-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 9px; }
+.obhod-app .ob-button.ob-danger { color: var(--ob-danger); border-color: var(--ob-danger); background: transparent; }
+.ob-check-ok, .ob-check-fail { font-weight: 650; }
 .ob-update-details { padding: 0; }
 .ob-update-details > summary { display: flex; align-items: center; gap: 12px; min-height: 64px; padding: 16px 22px; cursor: pointer; list-style: none; font-size: 14px; font-weight: 650; }
 .ob-update-details > summary::-webkit-details-marker { display: none; }

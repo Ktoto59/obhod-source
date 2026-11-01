@@ -2,11 +2,11 @@
   "luci-app-obhod": {
     "description": "Manage Obhod settings and service",
     "read": {
-      "ubus": { "obhod": [ "status", "interfaces", "coreSizes", "logs", "diagnostics" ], "file": [ "read" ] },
+      "ubus": { "obhod": [ "status", "interfaces", "coreSizes", "coreVersions", "logs", "diagnostics" ], "file": [ "read" ] },
       "file": { "/etc/obhod/settings.json": [ "read" ], "/etc/obhod/defaults.json": [ "read" ] }
     },
     "write": {
-      "ubus": { "obhod": [ "apply", "upload", "start", "stop", "subscription", "installCore", "update", "service", "diagnose", "clearLogs" ] }
+      "ubus": { "obhod": [ "apply", "upload", "start", "stop", "subscription", "installCore", "removeCore", "update", "service", "diagnose", "clearLogs" ] }
     }
   }
 }

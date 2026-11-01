@@ -9,7 +9,10 @@ BASE=/usr/libexec/obhod
 . "$BASE/package-lib.sh"
 die() { printf 'Ошибка: %s\n' "$*" >&2; exit 1; }
 profile=${2:-}
-case "$profile" in lite|full) ;; *) die 'Выберите lite или full.' ;; esac
+case "$profile" in lite|full|remove) ;; *) die 'Выберите lite, full или remove.' ;; esac
+compat_requested=${4:-auto}
+[ "$1" != start ] || compat_requested=${3:-auto}
+case "$compat_requested" in auto|1.13.21-obhod.2|1.13.21-obhod.3) ;; *) die 'Неизвестная версия ядра.' ;; esac
 mkdir -p "$RUN"; chmod 700 "$RUN"
 case "$1" in
 	start)
@@ -21,12 +24,13 @@ case "$1" in
 		printf '%s\n' "$token" > "$LOCK/token"
 		date +%s > "$LOCK/started"
 		printf 'running\n' > "$RUN/core-state"
+		printf '%s\n' "$profile" > "$RUN/core-action"
 		printf 'Проверяем зависимости и память…\n' > "$RUN/core-message"
 		# rpcd may exit or reload while downloading. Let procd own the worker.
 		if ! (
 			set +u; . /usr/share/libubox/jshn.sh
 			json_init; json_add_string name obhod-core; json_add_object instances; json_add_object task
-			json_add_array command; json_add_string '' "$0"; json_add_string '' worker; json_add_string '' "$profile"; json_add_string '' "$token"; json_close_array
+			json_add_array command; json_add_string '' "$0"; json_add_string '' worker; json_add_string '' "$profile"; json_add_string '' "$token"; json_add_string '' "$compat_requested"; json_close_array
 			json_add_boolean stdout 1; json_add_boolean stderr 1; json_add_int term_timeout 15
 			json_close_object; json_close_object
 			ubus call service set "$(json_dump)" >/dev/null
@@ -63,6 +67,13 @@ for other in sing-box podkop passwall passwall2 homeproxy; do
 		die 'Остановите другую службу прокси перед сменой ядра.'
 	fi
 done
+if [ "$profile" = remove ]; then
+	. "$BASE/core-remove.sh"
+	remove_core
+	result=done
+	message='Ядро удалено. Подключения и списки сохранены. Для запуска установите ядро снова.'
+	exit 0
+fi
 if [ "$profile" = lite ] && [ -s /etc/obhod/settings.json ]; then
 	jsonfilter -i /etc/obhod/settings.json -e '@' >/dev/null || die 'Не удалось прочитать сохранённые подключения.'
 	if jsonfilter -i /etc/obhod/settings.json -e '@.profile.tunnels[*].type' | grep -qx wireguard; then
@@ -80,6 +91,7 @@ read_resources
 compat_catalog=/usr/share/obhod/core-catalog.json
 compat_selector="$BASE/core-select.uc"
 select_compat_core
+[ "$compat" = 1 ] || [ "$compat_requested" = auto ] || die 'Выбранная версия недоступна для этой архитектуры или OpenWrt.'
 if [ "$compat" = 1 ]; then
 	if [ "$manager" = apk ]; then apk update; else opkg update; fi
 	resolve_sizes ca-bundle kmod-inet-diag kmod-tun libc

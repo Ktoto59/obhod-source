@@ -5,7 +5,7 @@ umask 077
 RUN=/var/run/obhod
 LOCK=/var/lock/obhod-job.lock
 action=${2:-}
-case "$action" in start|stop|diagnostics|dns-prepare) ;; *) echo 'Недопустимая операция.' >&2; exit 1 ;; esac
+case "$action" in start|stop|restart|diagnostics|dns-prepare) ;; *) echo 'Недопустимая операция.' >&2; exit 1 ;; esac
 mkdir -p "$RUN"; chmod 700 "$RUN"
 if [ "$1" = start ]; then
     mkdir "$LOCK" 2>/dev/null || { echo 'Проверка или переключение службы уже выполняется.' >&2; exit 1; }
@@ -43,8 +43,15 @@ if [ "$action" = dns-prepare ]; then
     else message='Не удалось подготовить DNS-группы. Проверьте доступ к репозиторию OpenWrt и свободное место.'; fi
     exit 0
 fi
-if [ "$action" = start ] || [ "$action" = stop ]; then
-    if /usr/libexec/obhod/control "$action" > "$RUN/control-log" 2>&1; then
+if [ "$action" = start ] || [ "$action" = stop ] || [ "$action" = restart ]; then
+    control_action=$action
+    if [ "$action" = restart ]; then
+        [ -f "$RUN/ready" ] || { message='Служба выключена. Для запуска используйте кнопку «Включить».'; exit 1; }
+        # control start waits for the old process and restores DNS before launch.
+        control_action=start
+        printf 'Перезапускаем службу с сохранёнными настройками…\n' > "$RUN/job-message"
+    fi
+    if /usr/libexec/obhod/control "$control_action" > "$RUN/control-log" 2>&1; then
         result=done; message='Состояние службы изменено.'
     else message=$(cat "$RUN/error" 2>/dev/null || echo 'Не удалось переключить службу. Проверьте журнал.'); fi
     exit 0
