@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Local integration test: real OpenWrt ucode + sing-box, no router/WAN changes."""
 import hashlib
+import argparse
 from concurrent.futures import ThreadPoolExecutor
 import json
 import os
@@ -123,7 +124,7 @@ def query(port, name, tcp=False, timeout=3, kind=1):
     return socket.inet_ntoa(data[-4:])
 
 
-def main():
+def main(native_core=None):
     archive = TOOLS/'rootfs.tar.gz'
     assert hashlib.sha256(archive.read_bytes()).hexdigest() == '55e52bb34de582a1ebe56bd50f94ff54ac7c77f5bca9cae807656d1930456da4'
     for port in [1053, 1153, 1154, 2081, *range(12053, 12065)]:
@@ -142,9 +143,10 @@ def main():
             for path in ['etc/obhod','var/run/obhod','usr/libexec/obhod']:(lab/path).mkdir(parents=True,exist_ok=True)
             resolver=lab/'etc/resolv.conf';resolver.unlink(missing_ok=True)
             resolver.write_text(Path('/etc/resolv.conf').read_text())
-            installed=subprocess.run(['chroot',lab,'/usr/bin/apk','--no-cache','add','ucode-mod-socket'],text=True,capture_output=True)
-            assert installed.returncode==0,installed.stderr
-            for name in ['prepare.uc','dns-pool-config.uc','dns-pool.uc']:
+            if not native_core:
+                installed=subprocess.run(['chroot',lab,'/usr/bin/apk','--no-cache','add','ucode-mod-socket'],text=True,capture_output=True)
+                assert installed.returncode==0,installed.stderr
+            for name in ['prepare.uc','native-dns.uc','dns-pool-config.uc','dns-pool.uc']:
                 shutil.copyfile(ROOT/'openwrt/obhod/files/usr/libexec/obhod'/name,lab/'usr/libexec/obhod'/name)
             # Node generates the same graph as LuCI; all test servers are local.
             js = '''const root=process.argv[1],ports=JSON.parse(process.argv[2]);
@@ -167,12 +169,22 @@ console.log(JSON.stringify({version:1,profile,options,config}));'''
                 assert result.returncode==0,result.stderr or result.stdout
                 return result
             pool_log=open(lab/'tmp/pool.log','w+')
-            shutil.copyfile(TOOLS/'sing-box-linux',lab/'usr/bin/sing-box'); (lab/'usr/bin/sing-box').chmod(0o755)
+            shutil.copyfile(native_core or TOOLS/'sing-box-linux',lab/'usr/bin/sing-box'); (lab/'usr/bin/sing-box').chmod(0o755)
             core_log = open(lab/'tmp/core.log','w+')
             def start():
                 inside('/usr/bin/ucode','/usr/libexec/obhod/prepare.uc')
+                if native_core:
+                    inside('/usr/bin/ucode','/usr/libexec/obhod/native-dns.uc')
+                    path=lab/'var/run/obhod/config.json'; runtime=json.loads(path.read_text())
+                    # Test-only loopback entry points exercise each pool directly.
+                    for group,port in [('direct',1153),('proxy',1154),('bootstrap',1155)]:
+                        tag='bootstrap-dns' if group=='bootstrap' else group+'-dns'
+                        runtime['inbounds'].append({'type':'direct','tag':'test-'+group,'listen':'127.0.0.1','listen_port':port})
+                        runtime['route']['rules'].insert(0,{'inbound':['test-'+group],'action':'hijack-dns'})
+                        runtime['dns']['rules'].insert(0,{'inbound':['test-'+group],'action':'route','server':tag,'disable_cache':True})
+                    path.write_text(json.dumps(runtime))
                 inside('/usr/bin/ucode','/usr/libexec/obhod/dns-pool-config.uc')
-                listening=[1053]
+                listening=[1053,1153,1154,1155] if native_core else [1053]
                 for group,port in [('direct',1153),('proxy',1154),('bootstrap',1155)]:
                     config=f'/var/run/obhod/dns-pool-{group}.json'
                     if not (lab/config.lstrip('/')).exists():continue
@@ -253,7 +265,7 @@ console.log(JSON.stringify({version:1,profile,options,config}));'''
             settings_path.write_text(json.dumps(saved));start()
             assert fetched==['/rules.json']
             print('PASS: cold rule-set download completes before main DNS listeners start')
-            assert query(12053,'hostname-resolved.example')=='203.0.113.42'
+            assert query(1153 if native_core else 12053,'hostname-resolved.example')=='203.0.113.42'
             assert query(1155,'bootstrap-answer.example')=='127.0.0.1' and bootstrap.count>0
             assert query(1053,'selected.example').startswith('198.18.')
             print('PASS: bootstrap has its own parallel failover and cannot recurse through FakeIP')
@@ -273,10 +285,17 @@ console.log(JSON.stringify({version:1,profile,options,config}));'''
         for process in processes:
             try:process.wait(timeout=5)
             except subprocess.TimeoutExpired:process.kill();process.wait()
+        if native_core and 'core_log' in locals() and not core_log.closed:
+            core_log.seek(0)
+            print('Native core failure log:',core_log.read())
+            core_log.close()
         for server in servers:
             server.shutdown()
             if isinstance(server,TCP):server.close_clients()
             server.server_close()
 
 
-if __name__=='__main__':main()
+if __name__=='__main__':
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--native-core',type=Path)
+    main(parser.parse_args().native_core)

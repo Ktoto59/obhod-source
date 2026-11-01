@@ -34,6 +34,9 @@ prepare() {
 		chmod 600 "$RUN/controller-secret"
 	fi
 	ucode /usr/libexec/obhod/prepare.uc || { error 'Не удалось подготовить конфигурацию службы.'; return 1; }
+	if /usr/bin/sing-box obhod-capabilities 2>/dev/null | grep -qx dns-pool-v1; then
+		ucode /usr/libexec/obhod/native-dns.uc || { error 'Не удалось подготовить встроенную группу DNS.'; return 1; }
+	fi
 	ucode /usr/libexec/obhod/dns-pool-config.uc || { error 'Не удалось подготовить группу DNS. Проверьте список серверов в LuCI.'; return 1; }
 	for pool in direct proxy bootstrap; do
 		file="$RUN/dns-pool-$pool.json"

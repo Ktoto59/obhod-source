@@ -277,7 +277,7 @@ return view.extend({
       E('details',{'class':'ob-details'},[E('summary',{},'Примеры форматов'),E('pre',{'class':'ob-code'},'Домены: example.org\nПодсети: 203.0.113.0/24\nВнешний список: https://example.org/rules.srs\nSource JSON: {"version":3,"rules":[{"domain_suffix":["example.org"]}]}')]) ]));
     this.panels.protocols.appendChild(card('Ядро протоколов', 'Выберите, какие подключения будут доступны на роутере.', [this.coreState,
       field('Набор протоколов', this.protocols), this.protocolHelp, this.coreButton, this.coreHint,
-      E('details', { 'class': 'ob-details' }, [E('summary', {}, 'О размере установки'), E('p', { 'class': 'ob-help' }, 'Прокси используют sing-box-tiny, WireGuard — полный sing-box. Протоколы входят в общее ядро: выбор одного не уменьшает его дальше. Перед установкой проверяется место; малый объём ОЗУ вызывает предупреждение.')]) ]));
+      E('details', { 'class': 'ob-details' }, [E('summary', {}, 'О размере установки'), E('p', { 'class': 'ob-help' }, 'Прокси используют sing-box-tiny, WireGuard — полный sing-box. На поддерживаемых MIPS/ARM64 автоматически устанавливается совместимое ядро Обхода с исправлением таблиц маршрутизации и встроенными DNS-группами. Протоколы входят в общее ядро: выбор одного не уменьшает его дальше. Перед установкой проверяется место; малый объём ОЗУ вызывает предупреждение.')]) ]));
     this.panels.network.appendChild(card('Локальная сеть', 'Выберите входящие LAN/guest-интерфейсы. WAN обычно добавлять не нужно.', [field('Интерфейсы роутера',this.interfaceSelect),field('Выбранные устройства / ручной ввод', this.interfaces, 'Обычно br-lan. Несколько имён укажите через запятую.')]));
     this.dnsSingleFields = E('div',{'class':'ob-grid'},[field('Провайдер',this.dnsPreset),field('Протокол',this.dnsProtocol),field('DNS-сервер',this.dnsServer),field('Bootstrap IPv4',this.dnsBootstrap),this.dnsPathField]);
     this.dnsPoolFields = E('div',{},[field('DNS-серверы группы',this.dnsUpstreams,'От двух до четырёх серверов, по одному в строке: IP, udp://, tcp://, tls:// или https:// с путём DoH.'),
@@ -360,7 +360,7 @@ return view.extend({
     var state = this.lastStatus, busy = !!(state.updateBusy || state.coreBusy || state.jobBusy);
     this.dnsPrepareButton.hidden = state.dnsPoolReady === true;
     this.dnsPrepareButton.disabled = busy;
-    this.dnsPrepareHint.textContent = state.dnsPoolReady ? 'DNS-группы готовы к работе.' : 'Для групп один раз установите небольшой дополнительный компонент из репозитория OpenWrt.';
+    this.dnsPrepareHint.textContent = state.dnsPoolNative ? 'DNS-группы работают внутри сетевого ядра.' : state.dnsPoolReady ? 'DNS-группы готовы к работе.' : 'Для групп один раз установите небольшой дополнительный компонент из репозитория OpenWrt.';
     this.operationNotice.hidden=!busy;
     this.operationTitle.textContent=state.coreBusy?'Установка ядра протоколов':state.updateBusy?'Обновление Обхода':'Операция службы';
     this.operationMessage.textContent=((state.coreBusy?state.coreMessage:state.updateBusy?state.updateMessage:state.jobMessage) || 'Выполняется операция…')

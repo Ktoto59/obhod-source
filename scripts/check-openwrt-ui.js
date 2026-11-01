@@ -277,6 +277,8 @@ app.whenReady().then(async () => {
       assert(saves===beforePoolSaves+1 && applied.options.dnsPoolMode==='parallel','DNS group mode and servers saved');
       assert(applied.options.dnsUpstreams.length===2 && applied.config.dns.servers.find(s=>s.tag==='proxy-dns').server_port===1154,'DNS group has the proxy gateway');
       assert(page.dnsPrepareButton.hidden,'Prepared DNS component no longer offers installation');
+      page.updateStatus({...page.lastStatus,dnsPoolNative:true,dnsPoolReady:true});
+      assert(page.dnsPrepareButton.hidden && page.dnsPrepareHint.textContent.includes('внутри сетевого ядра'),'Native DNS needs no optional component');
       page.dnsUpstreams.value='invalid endpoint';page.markDirty();await page.save(false);
       assert(saves===beforePoolSaves+1,'Invalid DNS group does not overwrite saved settings');
       page.cancelChanges();assert(page.dnsUpstreams.value.includes('1.0.0.1') && !page.dirty,'Cancel restores DNS group editor');

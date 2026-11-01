@@ -76,7 +76,20 @@ work=$(mktemp -d /tmp/obhod-core.XXXXXX) || die 'Не удалось созда�
 planner="$BASE/installer-plan.uc"
 read_resources
 [ "$tmp_free" -ge 1024 ] || die 'В /tmp осталось менее 1 МБ.'
-if [ "$manager" = apk ]; then
+. "$BASE/core-compat.sh"
+compat_catalog=/usr/share/obhod/core-catalog.json
+compat_selector="$BASE/core-select.uc"
+select_compat_core
+if [ "$compat" = 1 ]; then
+	if [ "$manager" = apk ]; then apk update; else opkg update; fi
+	resolve_sizes ca-bundle kmod-inet-diag kmod-tun libc
+	installed_bytes=$((installed_bytes+compat_plan_installed)); download_bytes=$((download_bytes+compat_plan_download))
+	check_budget
+	if [ "$manager" = apk ]; then apk add ca-bundle kmod-inet-diag kmod-tun libc
+	else opkg install ca-bundle kmod-inet-diag kmod-tun libc; fi
+	printf 'Устанавливаем совместимое ядро Обхода…\n' > "$RUN/core-message"
+	install_compat_core
+elif [ "$manager" = apk ]; then
 	apk update || die 'Не удалось обновить индексы APK.'
 	set -- "$core"
 	# Replace world constraints atomically. sing-box is a virtual provider of tiny.

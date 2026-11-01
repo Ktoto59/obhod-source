@@ -77,10 +77,12 @@ case "$2" in
 		# Loading a 35 MB Go binary on every poll is expensive on small routers.
 		# BusyBox stat is not enabled in every router image; ls is always present.
 		core_key=$(ls -ln /usr/bin/sing-box 2>/dev/null)
-		if [ -n "$core_key" ] && [ "$core_key" != "$(cat "$RUN/core-version-key" 2>/dev/null)" ]; then
+		if [ -n "$core_key" ] && { [ "$core_key" != "$(cat "$RUN/core-version-key" 2>/dev/null)" ] || [ ! -f "$RUN/core-capabilities" ]; }; then
 			cache=$(mktemp "$RUN/core-version.XXXXXX")
 			if /usr/bin/sing-box version > "$cache" 2>/dev/null; then
-				mv "$cache" "$RUN/core-version"; printf '%s\n' "$core_key" > "$RUN/core-version-key"
+				mv "$cache" "$RUN/core-version"
+				/usr/bin/sing-box obhod-capabilities > "$RUN/core-capabilities" 2>/dev/null || : > "$RUN/core-capabilities"
+				printf '%s\n' "$core_key" > "$RUN/core-version-key"
 			else rm -f "$cache"; fi
 		fi
 		core_version=
@@ -105,7 +107,10 @@ case "$2" in
 		json_add_boolean updateAvailable "$(if [ "$available_version" != "$app_version" ] && jsonfilter -i "$RUN/update-release.json" -e '@.available' 2>/dev/null | grep -qx true; then echo 1; else echo 0; fi)"
 		json_add_string error "$(cat "$RUN/error" 2>/dev/null)"
 		json_add_boolean jobBusy "$([ -d /var/lock/obhod-job.lock ] && echo 1 || echo 0)"
-		json_add_boolean dnsPoolReady "$([ -f /usr/lib/ucode/socket.so ] && echo 1 || echo 0)"
+		native_dns=0
+		[ -z "$core_key" ] || { grep -qx dns-pool-v1 "$RUN/core-capabilities" 2>/dev/null && native_dns=1; } || true
+		json_add_boolean dnsPoolNative "$native_dns"
+		json_add_boolean dnsPoolReady "$({ [ "$native_dns" = 1 ] || [ -f /usr/lib/ucode/socket.so ]; } && echo 1 || echo 0)"
 		json_add_string jobState "$(cat "$RUN/job-state" 2>/dev/null)"
 		json_add_string jobAction "$(cat "$RUN/job-action" 2>/dev/null)"
 		json_add_string jobMessage "$(cat "$RUN/job-message" 2>/dev/null)"

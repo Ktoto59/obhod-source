@@ -11,7 +11,10 @@
       "revision": "57276220a20679cad762c9644f6abdaf39ab7688",
       "sha256": "00302b3785ee7f3f896df4d027707543202d082300e60719a51b21f5fc9a5917",
       "licenseExpression": "GPL-3.0-or-later",
-      "licenseFiles": ["LICENSES/GPL-3.0-only.txt", "LICENSES/sing-box-GPL-notice.txt"],
+      "licenseFiles": [
+        "LICENSES/GPL-3.0-only.txt",
+        "LICENSES/sing-box-GPL-notice.txt"
+      ],
       "sourceRepository": "https://github.com/hoaxisr/amnezia-box",
       "sourceUrl": "https://github.com/hoaxisr/amnezia-box/tree/57276220a20679cad762c9644f6abdaf39ab7688",
       "sourceArchiveUrl": "https://github.com/hoaxisr/amnezia-box/archive/57276220a20679cad762c9644f6abdaf39ab7688.zip",
@@ -28,7 +31,10 @@
       "revision": "628cb31ffa79cffffd34c2f9cde6cae044e4fc12",
       "sha256": "f32f26ef9171684ea10dc1b69b15fc23674af7884fbc210477239bde0db971e0",
       "licenseExpression": "GPL-3.0-or-later",
-      "licenseFiles": ["LICENSES/GPL-3.0-only.txt", "LICENSES/sing-box-GPL-notice.txt"],
+      "licenseFiles": [
+        "LICENSES/GPL-3.0-only.txt",
+        "LICENSES/sing-box-GPL-notice.txt"
+      ],
       "sourceRepository": "https://github.com/SagerNet/sing-box",
       "sourceUrl": "https://github.com/SagerNet/sing-box/tree/628cb31ffa79cffffd34c2f9cde6cae044e4fc12",
       "sourceArchiveUrl": "https://github.com/Ktoto59/obhod-releases/releases/download/openwrt-core-mips-v1.13.21-obhod.1/sing-box-1.13.21-obhod.1-source.tar.gz",
@@ -45,9 +51,95 @@
       "version": "v3.1.0-awgm.2",
       "revision": "ad2b1d906df4e4e0c405c5490addc7c984bc878d",
       "licenseExpression": "MIT",
-      "licenseFiles": ["LICENSES/AmneziaWG-Go-MIT.txt"],
+      "licenseFiles": [
+        "LICENSES/AmneziaWG-Go-MIT.txt"
+      ],
       "sourceRepository": "https://github.com/hoaxisr/amneziawg-go",
       "sourceUrl": "https://github.com/hoaxisr/amneziawg-go/tree/ad2b1d906df4e4e0c405c5490addc7c984bc878d"
+    },
+    {
+      "id": "sing-box-obhod-mipsle-lite",
+      "name": "sing-box Obhod compatibility build (mipsle, lite)",
+      "kind": "external-process",
+      "bundled": false,
+      "version": "1.13.21-obhod.2",
+      "revision": "628cb31ffa79cffffd34c2f9cde6cae044e4fc12",
+      "sha256": "19c3c7bec05588ac63cbd513f2f07707a20426059e0c53e93b1e968630e3a034",
+      "licenseExpression": "GPL-3.0-or-later",
+      "licenseFiles": [
+        "LICENSES/GPL-3.0-only.txt",
+        "LICENSES/sing-box-GPL-notice.txt"
+      ],
+      "sourceRepository": "https://github.com/SagerNet/sing-box",
+      "sourceUrl": "https://github.com/SagerNet/sing-box/tree/628cb31ffa79cffffd34c2f9cde6cae044e4fc12",
+      "sourceArchiveUrl": "https://api.github.com/repos/Ktoto59/obhod-releases/releases/assets/699090398",
+      "sourceArchiveSha256": "cf6cd23f522cb4540aa5f5e708619e389fe0597e2ab9b72522c9bb90c48901e0",
+      "releaseSourceName": "sing-box-1.13.21-obhod.2-source.tar.gz",
+      "buildInstructions": "core/README.md",
+      "sourceStatus": "verified"
+    },
+    {
+      "id": "sing-box-obhod-mipsle-full",
+      "name": "sing-box Obhod compatibility build (mipsle, full)",
+      "kind": "external-process",
+      "bundled": false,
+      "version": "1.13.21-obhod.2",
+      "revision": "628cb31ffa79cffffd34c2f9cde6cae044e4fc12",
+      "sha256": "fba5a449665dc41e040cc6fbecc25f387e9e15b58449c1f6e1893926075f13e2",
+      "licenseExpression": "GPL-3.0-or-later",
+      "licenseFiles": [
+        "LICENSES/GPL-3.0-only.txt",
+        "LICENSES/sing-box-GPL-notice.txt"
+      ],
+      "sourceRepository": "https://github.com/SagerNet/sing-box",
+      "sourceUrl": "https://github.com/SagerNet/sing-box/tree/628cb31ffa79cffffd34c2f9cde6cae044e4fc12",
+      "sourceArchiveUrl": "https://api.github.com/repos/Ktoto59/obhod-releases/releases/assets/699090398",
+      "sourceArchiveSha256": "cf6cd23f522cb4540aa5f5e708619e389fe0597e2ab9b72522c9bb90c48901e0",
+      "releaseSourceName": "sing-box-1.13.21-obhod.2-source.tar.gz",
+      "buildInstructions": "core/README.md",
+      "sourceStatus": "verified"
+    },
+    {
+      "id": "sing-box-obhod-arm64-lite",
+      "name": "sing-box Obhod compatibility build (arm64, lite)",
+      "kind": "external-process",
+      "bundled": false,
+      "version": "1.13.21-obhod.2",
+      "revision": "628cb31ffa79cffffd34c2f9cde6cae044e4fc12",
+      "sha256": "81d392a817b3d8cf0287862884a6f16c8305779f608673bacd79c0e397a0ad7c",
+      "licenseExpression": "GPL-3.0-or-later",
+      "licenseFiles": [
+        "LICENSES/GPL-3.0-only.txt",
+        "LICENSES/sing-box-GPL-notice.txt"
+      ],
+      "sourceRepository": "https://github.com/SagerNet/sing-box",
+      "sourceUrl": "https://github.com/SagerNet/sing-box/tree/628cb31ffa79cffffd34c2f9cde6cae044e4fc12",
+      "sourceArchiveUrl": "https://api.github.com/repos/Ktoto59/obhod-releases/releases/assets/699090398",
+      "sourceArchiveSha256": "cf6cd23f522cb4540aa5f5e708619e389fe0597e2ab9b72522c9bb90c48901e0",
+      "releaseSourceName": "sing-box-1.13.21-obhod.2-source.tar.gz",
+      "buildInstructions": "core/README.md",
+      "sourceStatus": "verified"
+    },
+    {
+      "id": "sing-box-obhod-arm64-full",
+      "name": "sing-box Obhod compatibility build (arm64, full)",
+      "kind": "external-process",
+      "bundled": false,
+      "version": "1.13.21-obhod.2",
+      "revision": "628cb31ffa79cffffd34c2f9cde6cae044e4fc12",
+      "sha256": "0fc79524b21b622479fe299517a3b78ed90c6299252b848e0c3c0952028f0a95",
+      "licenseExpression": "GPL-3.0-or-later",
+      "licenseFiles": [
+        "LICENSES/GPL-3.0-only.txt",
+        "LICENSES/sing-box-GPL-notice.txt"
+      ],
+      "sourceRepository": "https://github.com/SagerNet/sing-box",
+      "sourceUrl": "https://github.com/SagerNet/sing-box/tree/628cb31ffa79cffffd34c2f9cde6cae044e4fc12",
+      "sourceArchiveUrl": "https://api.github.com/repos/Ktoto59/obhod-releases/releases/assets/699090398",
+      "sourceArchiveSha256": "cf6cd23f522cb4540aa5f5e708619e389fe0597e2ab9b72522c9bb90c48901e0",
+      "releaseSourceName": "sing-box-1.13.21-obhod.2-source.tar.gz",
+      "buildInstructions": "core/README.md",
+      "sourceStatus": "verified"
     }
   ]
 }

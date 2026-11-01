@@ -10,6 +10,8 @@ for (let group in ['direct', 'proxy', 'bootstrap']) {
     let file = root + 'dns-pool-' + group + '.json';
     unlink(file);
     if (!enabled) continue;
+    let canonical = filter(config.dns?.servers || [], s => s.tag == (group=='bootstrap'?'bootstrap-dns':group+'-dns'))[0];
+    if (canonical?.type == 'obhod-pool') continue;
     if (group == 'bootstrap') {
         let gateway = filter(config.dns?.servers || [], s => s.tag == 'bootstrap-dns')[0];
         if (gateway?.server != '127.0.0.1' || gateway?.server_port != 1155) continue;
