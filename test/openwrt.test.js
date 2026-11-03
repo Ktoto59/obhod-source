@@ -113,6 +113,8 @@ test('explicit CIDRs route before sniffing while DNS, restored names and private
   assert.ok(rules.findIndex(r => r.domain_suffix) < ip);
   assert.ok(rules.findIndex(r => r.ip_is_private && r.outbound === 'direct') < ip);
   assert.ok(ip < sniff);
+  assert.equal(rules.filter(r => r.ip_cidr?.includes('203.0.113.0/24')).length, 1, 'immutable IP match is final before sniff');
+  assert.equal(rules.filter(r => r.ip_is_private && r.outbound === 'direct').length, 1);
 });
 
 test('nftables selects the union of FakeIP, enabled subnets and live rule sets without a bypass option', () => {
@@ -122,8 +124,9 @@ test('nftables selects the union of FakeIP, enabled subnets and live rule sets w
   value.routing.presetIds = ['discord'];
   value.routing.remoteLists = [{ id: 'network', name: 'Networks', enabled: true, kind: 'cidrs', url: 'https://example.org/networks.srs' }];
   for (const ipv6 of [false, true]) {
-    for (const kernelDirect of [false, true]) {
-      const config = generateRouterConfig(value, { ipv6, kernelDirect });
+    for (const format of ['srs', 'json']) {
+      value.routing.remoteLists[0].url = `https://example.org/networks.${format}`;
+      const config = generateRouterConfig(value, { ipv6 });
       const tun = config.inbounds.find(i => i.type === 'tun');
       assert.deepEqual(tun.route_address_set, ['obhod-selected-addresses', 'preset-discord', 'remote-network']);
       assert.equal(tun.route_address, undefined, 'do not intersect static and live selections');
@@ -131,6 +134,7 @@ test('nftables selects the union of FakeIP, enabled subnets and live rule sets w
       const local = config.route.rule_set.find(r => r.tag === 'obhod-selected-addresses');
       assert.deepEqual(local.rules[0].ip_cidr.slice().sort(), ['198.18.0.0/15', ...(ipv6 ? ['2001:2::/48'] : []), '203.0.113.0/24', '2001:db8:123::/48'].sort());
       assert.ok(!config.route.rules.some(r => r.action === 'bypass'));
+      assert.equal(config.route.rule_set.find(r => r.tag === 'remote-network').format, format === 'srs' ? 'binary' : 'source');
     }
   }
   const empty = profile(); empty.routing.localLists = [];
@@ -160,7 +164,7 @@ test('LuCI shares the real parser and generator without a Node.js runtime', () =
 });
 
 test('sing-box accepts the router DNS, LAN interception and failover configuration', {
-  skip: !fs.existsSync(path.join(__dirname, '../windows/runtime/sing-box.exe'))
+  skip: !fs.existsSync(process.env.OBHOD_TEST_CORE || path.join(__dirname, '../windows/runtime/sing-box.exe'))
 }, () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'obhod-openwrt-config-'));
   try {
@@ -170,7 +174,7 @@ test('sing-box accepts the router DNS, LAN interception and failover configurati
     // Windows cannot initialize Linux nftables. Linux validation is run separately.
     if (process.platform === 'win32') delete config.inbounds.find((inbound) => inbound.type === 'tun').auto_redirect;
     fs.writeFileSync(file, JSON.stringify(config));
-    const result = spawnSync(path.join(__dirname, '../windows/runtime/sing-box.exe'), ['check', '-c', file], { encoding: 'utf8', windowsHide: true });
+    const result = spawnSync(process.env.OBHOD_TEST_CORE || path.join(__dirname, '../windows/runtime/sing-box.exe'), ['check', '-c', file], { encoding: 'utf8', windowsHide: true });
     assert.equal(result.status, 0, result.stderr || result.stdout);
     }
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }

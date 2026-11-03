@@ -22,6 +22,7 @@ type poolStub struct {
 	code     int
 	wrong    bool
 	silent   bool
+	nodata   bool
 	count    atomic.Int32
 	canceled atomic.Int32
 }
@@ -44,6 +45,10 @@ func (s *poolStub) Exchange(ctx context.Context, query *dns.Msg) (*dns.Msg, erro
 	}
 	answer := new(dns.Msg)
 	answer.SetRcode(query, s.code)
+	if s.code == dns.RcodeSuccess && !s.nodata {
+		rr, _ := dns.NewRR(query.Question[0].Name + " 60 IN A 203.0.113.42")
+		answer.Answer = []dns.RR{rr}
+	}
 	if s.wrong {
 		answer.Question = []dns.Question{{Name: "wrong.example.", Qtype: dns.TypeA, Qclass: dns.ClassINET}}
 	}
@@ -141,6 +146,79 @@ func TestObhodPoolSuccessfulAnswerWinsOverRefused(t *testing.T) {
 		a, err := p.Exchange(context.Background(), poolQuery())
 		if err != nil || a.Rcode != dns.RcodeSuccess {
 			t.Fatalf("mode=%s: %v", mode, err)
+		}
+	}
+}
+
+func TestObhodPoolNegativeAnswerWindow(t *testing.T) {
+	for _, mode := range []string{"parallel", "balanced"} {
+		for _, code := range []int{dns.RcodeNameError, dns.RcodeSuccess} {
+			negative := &poolStub{wait: 15 * time.Millisecond, code: code, nodata: true}
+			positive := &poolStub{wait: 45 * time.Millisecond}
+			p := testPool(mode, negative, positive)
+			a, err := p.Exchange(context.Background(), poolQuery())
+			if err != nil || len(a.Answer) == 0 {
+				t.Fatalf("mode=%s code=%d: negative masked address: %v %v", mode, code, a, err)
+			}
+		}
+		for _, other := range []*poolStub{{code: dns.RcodeNameError}, {silent: true}} {
+			p := testPool(mode, &poolStub{code: dns.RcodeNameError}, other)
+			begin := time.Now()
+			a, err := p.Exchange(context.Background(), poolQuery())
+			if err != nil || a.Rcode != dns.RcodeNameError || time.Since(begin) > time.Second {
+				t.Fatalf("mode=%s: negative timeout: %v", mode, err)
+			}
+		}
+	}
+}
+
+func TestObhodPoolTimeoutAndResourceRecovery(t *testing.T) {
+	p := testPool("parallel", &poolStub{silent: true}, &poolStub{silent: true})
+	begin := time.Now()
+	if _, err := p.Exchange(context.Background(), poolQuery()); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("unavailable members: %v", err)
+	}
+	if time.Since(begin) > 5*time.Second {
+		t.Fatal("pool exceeded its transport deadline")
+	}
+	for round := 0; round < 4; round++ {
+		var workers sync.WaitGroup
+		for i := 0; i < 96; i++ {
+			workers.Add(1)
+			go func() {
+				defer workers.Done()
+				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+				defer cancel()
+				if _, err := p.Exchange(ctx, poolQuery()); err == nil {
+					t.Error("unavailable members returned success")
+				}
+			}()
+		}
+		workers.Wait()
+		deadline := time.Now().Add(time.Second)
+		for len(p.limit) != 0 {
+			if time.Now().After(deadline) {
+				t.Fatal("canceled exchanges leaked admission tokens")
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+}
+
+func TestObhodPoolQuestionIdentity(t *testing.T) {
+	q := poolQuery()
+	for _, change := range []func(*dns.Msg){
+		func(a *dns.Msg) { a.Response = false },
+		func(a *dns.Msg) { a.Opcode = dns.OpcodeStatus },
+		func(a *dns.Msg) { a.Question[0].Name = "other.example." },
+		func(a *dns.Msg) { a.Question[0].Qtype = dns.TypeAAAA },
+		func(a *dns.Msg) { a.Question[0].Qclass = dns.ClassCHAOS },
+	} {
+		a := new(dns.Msg)
+		a.SetReply(q)
+		change(a)
+		if validPoolAnswer(q, a) {
+			t.Fatalf("accepted mismatched answer: %v", a)
 		}
 	}
 }

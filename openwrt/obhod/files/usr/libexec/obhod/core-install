@@ -6,23 +6,20 @@ export LC_ALL=C
 RUN=/var/run/obhod
 LOCK=/var/lock/obhod-core.lock
 BASE=/usr/libexec/obhod
+operation() { ucode "$BASE/operation.uc" "$@"; }
 . "$BASE/package-lib.sh"
 die() { printf 'Ошибка: %s\n' "$*" >&2; exit 1; }
 profile=${2:-}
 case "$profile" in lite|full|remove) ;; *) die 'Выберите lite, full или remove.' ;; esac
 compat_requested=${4:-auto}
 [ "$1" != start ] || compat_requested=${3:-auto}
-case "$compat_requested" in auto|1.13.21-obhod.2|1.13.21-obhod.3|1.13.21-obhod.4) ;; *) die 'Неизвестная версия ядра.' ;; esac
+ucode "$BASE/core-select.uc" /usr/share/obhod/core-catalog.json '' '' validate '' "$compat_requested" || die 'Неизвестная версия ядра или некорректный каталог.'
 mkdir -p "$RUN"; chmod 700 "$RUN"
 case "$1" in
 	start)
-		mkdir "$LOCK" 2>/dev/null || die 'Установка ядра уже выполняется.'
-		if ! mkdir /var/lock/obhod-apply.lock 2>/dev/null; then rmdir "$LOCK"; die 'Другая операция Обхода ещё выполняется.'; fi
-		if [ -f "$RUN/ready" ] || [ "$(uci -q get obhod.main.enabled)" = 1 ]; then rmdir /var/lock/obhod-apply.lock "$LOCK"; die 'Перед сменой протоколов выключите Обход.'; fi
-		trap 'rm -f "$LOCK/pid" "$LOCK/started" "$LOCK/token"; rmdir /var/lock/obhod-apply.lock "$LOCK" 2>/dev/null' EXIT
-		token="$$-$(date +%s)"
-		printf '%s\n' "$token" > "$LOCK/token"
-		date +%s > "$LOCK/started"
+		token=$(operation acquire core '' "$$") || die 'Другая операция Обхода ещё выполняется.'
+		trap 'operation release core "$token" "$$" error "Не удалось запустить установку ядра. Повторите попытку."' EXIT
+		if [ -f "$RUN/ready" ] || [ "$(uci -q get obhod.main.enabled)" = 1 ]; then die 'Перед сменой протоколов выключите Обход.'; fi
 		printf 'running\n' > "$RUN/core-state"
 		printf '%s\n' "$profile" > "$RUN/core-action"
 		printf 'Проверяем зависимости и память…\n' > "$RUN/core-message"
@@ -46,17 +43,15 @@ case "$1" in
 esac
 # A delayed procd launch cannot reuse a lock already recovered by status polling.
 token=${3:-}
-[ -n "$token" ] && [ "$(cat "$LOCK/token" 2>/dev/null)" = "$token" ] || exit 1
+exec 9>"$LOCK/lease" || exit 1
+operation claim core "$token" "$$" || exit 1
 exec > "$RUN/core-log" 2>&1
-printf '%s\n' "$$" > "$LOCK/pid"
 work=
 result=error
 message='Установка не завершилась. Проверьте состояние пакетов.'
 finish() {
-	printf '%s\n' "$message" > "$RUN/core-message"
-	printf '%s\n' "$result" > "$RUN/core-state"
 	case "$work" in /tmp/obhod-core.*) rm -rf "$work" ;; esac
-	rm -f "$LOCK/pid" "$LOCK/started" "$LOCK/token"; rmdir /var/lock/obhod-apply.lock "$LOCK"
+	operation release core "$token" "$$" "$result" "$message"
 }
 trap finish EXIT
 trap 'exit 130' INT TERM
@@ -84,6 +79,7 @@ detect_manager
 core=sing-box; [ "$profile" != lite ] || core=sing-box-tiny
 old=$(find_core)
 work=$(mktemp -d /tmp/obhod-core.XXXXXX) || die 'Не удалось создать рабочую папку.'
+printf '%s\n' "$work" > "$LOCK/work"
 planner="$BASE/installer-plan.uc"
 read_resources
 [ "$tmp_free" -ge 1024 ] || die 'В /tmp осталось менее 1 МБ.'

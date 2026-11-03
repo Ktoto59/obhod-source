@@ -71,8 +71,9 @@ jobs:
           set -euo pipefail
           (cd "$RUNNER_TEMP/patched/source" && go test -mod=readonly -race ./dns/transport -run TestObhod -count=1)
           (cd "$RUNNER_TEMP/patched/source" && go test -mod=readonly -race ./route -run TestObhod -count=1)
+          (cd "$RUNNER_TEMP/patched/source" && go test -mod=readonly -race ./experimental/cachefile -run TestObhod -count=1)
           (cd "$RUNNER_TEMP/patched/sing" && go test -mod=readonly -race ./common/udpnat2 -run TestObhod -count=1)
-          (cd "$RUNNER_TEMP/patched/sing-tun" && go test -mod=readonly -race ./ping -run TestObhod -count=1)
+          (cd "$RUNNER_TEMP/patched/sing-tun" && go test -mod=readonly -race . ./ping -run TestObhod -count=1)
           sh core/build.sh "$RUNNER_TEMP/patched" "$RUNNER_TEMP/binaries" amd64 lite
           "$RUNNER_TEMP/binaries/sing-box-linux-amd64-lite" obhod-capabilities | grep -qx dns-pool-v1
           "$RUNNER_TEMP/binaries/sing-box-linux-amd64-lite" obhod-capabilities | grep -qx kernel-route-set-v1

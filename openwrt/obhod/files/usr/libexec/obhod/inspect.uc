@@ -22,9 +22,16 @@ let tag = 'tunnel-' + replace(routing.activeTunnelId || '', /[^a-z0-9_-]/gi, '_'
 let proxies = json(readfile(ARGV[1]) || '{}').proxies || {};
 if (routing.failoverEnabled) tag = proxies.proxy?.now || '';
 if (!match(tag, /^tunnel-[a-zA-Z0-9_-]+$/)) tag = '';
-if (mode == 'tag') { print(tag); exit(0); }
+if (mode == 'tag') { if (!routing.failoverEnabled || ARGV[2] == 'diagnose') print(tag); exit(0); }
 let selected;
 for (let tunnel in settings.profile.tunnels) if ('tunnel-' + replace(tunnel.id, /[^a-z0-9_-]/gi, '_') == tag) selected = tunnel;
 let delay = json(readfile(ARGV[2]) || '{}').delay;
-let ok = type(delay) == 'int' && delay >= 0 && delay < 60000;
-printf('%J\n', { name: selected?.name || '', tag, delay: ok ? delay : null, ok, checkedAt: time() });
+let explicit = ARGV[3] == 'diagnose', active = explicit || ARGV[3] == 'active', proxy = proxies[tag];
+let history = proxy?.history || [], sample = length(history) ? history[length(history) - 1] : null;
+if (!active) delay = sample?.delay;
+let valid = type(delay) == 'int' && delay > 0 && delay < 60000;
+// An absent urltest sample means unknown latency, not a failed connection.
+// Only explicit diagnosis or an actual failed urltest sample reports failure.
+let ok = active ? valid : !!proxy && (!sample || valid);
+printf('%J\n', { name: selected?.name || '', tag, delay: valid ? delay : null, ok,
+    checkedAt: time(), delayTime: active ? null : sample?.time, diagnostic: explicit });

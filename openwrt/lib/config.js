@@ -38,6 +38,16 @@ function configureFakeIp(config, profile, options) {
     early.push(...ipRoutes.map(rule => ({ ...rule })));
   }
   config.route.rules.splice(config.route.rules.findIndex(rule => rule.action === 'sniff'), 0, ...early);
+  // Sniff can add a domain, so domain/rule-set matches need a second pass.
+  // It does not change the destination IP. Identical terminal IP/private rules
+  // which already ran before sniff cannot match for the first time afterwards.
+  const terminalIps = new Set();
+  config.route.rules = config.route.rules.filter(rule => {
+    if (rule.action !== 'route' || !(rule.ip_cidr || rule.ip_is_private)) return true;
+    const key = JSON.stringify(rule);
+    if (terminalIps.has(key)) return false;
+    terminalIps.add(key); return true;
+  });
 }
 
 function defaultRouterProfile() {

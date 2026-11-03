@@ -18,13 +18,18 @@ once() {
     fetch() { (ulimit -c 0; ulimit -f 256; uclient-fetch -q -T 6 --header="Authorization: Bearer $secret" -O "$2" "http://127.0.0.1:2081$1") 2>/dev/null; }
     printf '{}\n' > "$work/proxies"
     printf '{}\n' > "$work/delay"
+    mode=passive
     if fetch /proxies "$work/proxies"; then
-        tag=$(ucode /usr/libexec/obhod/inspect.uc tag "$work/proxies" 2>/dev/null)
+        # urltest owns group probes. A fixed server has no urltest telemetry;
+        # retain its single existing probe so failure detection does not regress.
+        tag=$(ucode /usr/libexec/obhod/inspect.uc tag "$work/proxies" "${1:-}" 2>/dev/null)
         case "$tag" in tunnel-*[!a-zA-Z0-9_-]*|'') ;; *) fetch "/proxies/$tag/delay?url=https%3A%2F%2Fwww.gstatic.com%2Fgenerate_204&timeout=4000" "$work/delay" || printf '{}\n' > "$work/delay" ;;
         esac
+        [ -z "$tag" ] || mode=active
     fi
-    ucode /usr/libexec/obhod/inspect.uc result "$work/proxies" "$work/delay" > "$work/telemetry" 2>/dev/null && mv "$work/telemetry" "$RUN/telemetry.json"
+    [ "${1:-}" != diagnose ] || mode=diagnose
+    ucode /usr/libexec/obhod/inspect.uc result "$work/proxies" "$work/delay" "$mode" > "$work/telemetry" 2>/dev/null && mv "$work/telemetry" "$RUN/telemetry.json"
     rm -rf "$work"; rmdir /var/lock/obhod-monitor.lock; work=
 }
-if [ "$1" = once ]; then once; exit $?; fi
+case "$1" in once|diagnose) once "$1"; exit $?;; esac
 while kill -0 "$1" 2>/dev/null; do once; sleep 30 & timer=$!; wait "$timer"; timer=; done

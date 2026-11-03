@@ -273,6 +273,8 @@ def rpc_tests():
     assert '1.12.22' in call('status', {})['version']
     # Equivalent JSON does not restart the running service or rewrite flash.
     unchanged=(LAB/'etc/obhod/settings.json').read_bytes()
+    (LAB/'var/run/obhod/run-pid').write_text(str(os.getpid()))
+    inside('/sbin/uci', 'set', 'obhod.main.enabled=1')
     (LAB/'var/run/obhod/prepared.sha').write_text(inside('/bin/sh','-c','sha256sum /etc/obhod/settings.json /usr/libexec/obhod/prepare.uc')+'\n')
     manager.write_text('#!/bin/sh\necho "$1" >> /tmp/unchanged-start-calls\nexit 1\n'); manager.chmod(0o755)
     same=json.dumps(dict(reversed(list(state.items()))),indent=2)
@@ -284,6 +286,7 @@ def rpc_tests():
     prepared.write_bytes(old_prepare+b'\n// App update fixture\n')
     assert not call('apply',{'settings':same,'start':True})['ok'], 'An app update must not be mistaken for a no-op'
     prepared.write_bytes(old_prepare)
+    (LAB/'var/run/obhod/run-pid').unlink()
     manager.write_text('#!/bin/sh\ncase "$1" in start|restart) touch /var/run/obhod/ready;; stop) rm -f /var/run/obhod/ready;; esac\n');manager.chmod(0o755)
     assert call('stop', {})['ok']
     assert not call('status', {})['running']
@@ -346,7 +349,7 @@ def observability_tests():
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
             assert self.headers.get('Authorization')=='Bearer '+secret
-            value={'proxies':{'proxy':{'now':'tunnel-bbb'},'tunnel-bbb':{'history':[]}}} if self.path=='/proxies' else {'delay':83}
+            value={'proxies':{'proxy':{'now':'tunnel-bbb'},'tunnel-bbb':{'history':[{'time':'2026-01-01T00:00:00Z','delay':83}]}}} if self.path=='/proxies' else {'delay':83}
             body=json.dumps(value).encode();self.send_response(200);self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
         def log_message(self,*args):pass
     server=http.server.HTTPServer(('127.0.0.1',2081),Handler)
@@ -362,7 +365,8 @@ def observability_tests():
 if [ "$1 $2 $3" = 'call service set' ]; then
  command=$(jsonfilter -s "$4" -e '@.instances.task.command[0]')
  action=$(jsonfilter -s "$4" -e '@.instances.task.command[2]')
- "$command" worker "$action" </dev/null >/dev/null 2>&1 &
+ token=$(jsonfilter -s "$4" -e '@.instances.task.command[3]')
+ "$command" worker "$action" "$token" </dev/null >/dev/null 2>&1 &
  echo '{}';exit 0
 fi
 echo '{}'
@@ -472,6 +476,8 @@ else echo '{}'; fi
         pid.write_text('99999999')
         inside('/bin/mkdir','/var/lock/obhod-apply.lock')
         inside('/usr/libexec/obhod/control','recover'); assert not calls.exists(), 'Respect an active apply/job'
+        (LAB/'var/lock/obhod-apply.lock/started').unlink()
+        (LAB/'var/lock/obhod-apply.lock/lease').unlink()
         inside('/bin/rmdir','/var/lock/obhod-apply.lock')
         inside('/usr/libexec/obhod/control','recover','wan'); assert not calls.exists(), 'Do not restart during WAN down'
         (LAB/'tmp/recovery-wan-up').touch()
@@ -725,7 +731,7 @@ def core_job_tests():
     (LAB/'var/lock/obhod-core.lock/pid').write_text('2147483647\n')
     # A live package-manager child must retain the lock after its worker dies.
     pidof=LAB/'bin/pidof';pidof.rename(LAB/'tmp/core-real-pidof')
-    pidof.write_text('#!/bin/sh\n[ -f /tmp/package-busy ]\n');pidof.chmod(0o755)
+    pidof.write_text(f'#!/bin/sh\n[ ! -f /tmp/package-busy ] || echo {os.getpid()}\n');pidof.chmod(0o755)
     (LAB/'tmp/package-busy').touch()
     assert rpc('status', {})['coreBusy']
     (LAB/'tmp/package-busy').unlink()
@@ -771,7 +777,7 @@ def update_tests():
         shutil.copyfile(PACKAGES/name, LAB/'tmp'/name)
     inside('/usr/bin/apk','--no-network','--no-scripts','add','--allow-untrusted','/tmp/obhod-0.1.4-r1.apk','/tmp/luci-app-obhod-0.1.4-r1.apk')
     base = LAB/'usr/libexec/obhod'
-    for name in ['update','update-metadata.uc','package-lib.sh']:
+    for name in ['update','update-metadata.uc','package-lib.sh','operation.uc']:
         shutil.copyfile(ROOT/'openwrt/obhod/files/usr/libexec/obhod'/name, base/name); (base/name).chmod(0o755)
     (LAB/'usr/share/obhod/version').parent.mkdir(parents=True,exist_ok=True)
     (LAB/'usr/share/obhod/version').write_text('0.1.4\n')
@@ -783,7 +789,8 @@ def update_tests():
 if [ "$1 $2 $3" = 'call service set' ]; then
  command=$(jsonfilter -s "$4" -e '@.instances.job.command[0]')
  action=$(jsonfilter -s "$4" -e '@.instances.job.command[2]')
- "$command" worker "$action" </dev/null >/dev/null 2>&1 &
+ token=$(jsonfilter -s "$4" -e '@.instances.job.command[3]')
+ "$command" worker "$action" "$token" </dev/null >/dev/null 2>&1 &
  echo '{}'; exit 0
 fi
 echo '{}'
@@ -938,7 +945,7 @@ exec /bin/opkg-real --conf /etc/opkg.conf --offline-root / "$@"
         assert (lab/'tmp/core-calls').read_text().count('\nremove ') == before.count('\nremove ')
         # Exercise the same self-updater with the other supported package manager.
         inside_lab('/bin/opkg','--force-downgrade','install','/tmp/obhod_0.1.4-1_all.ipk','/tmp/luci-app-obhod_0.1.4-1_all.ipk')
-        for name in ['update','update-metadata.uc','package-lib.sh']:
+        for name in ['update','update-metadata.uc','package-lib.sh','operation.uc']:
             target=lab/'usr/libexec/obhod'/name
             shutil.copyfile(ROOT/'openwrt/obhod/files/usr/libexec/obhod'/name,target); target.chmod(0o755)
         (lab/'usr/share/obhod').mkdir(parents=True,exist_ok=True)

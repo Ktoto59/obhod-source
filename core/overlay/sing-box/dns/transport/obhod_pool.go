@@ -20,6 +20,11 @@ import (
 
 const obhodPoolType = "obhod-pool"
 
+// Give another resolver a short opportunity to contradict NXDOMAIN/NODATA.
+// All completed members return immediately; a silent loser cannot turn a real
+// negative answer into the full four-second transport timeout.
+const obhodPoolNegativeWait = 200 * time.Millisecond
+
 func RegisterObhodPool(registry *boxDNS.TransportRegistry) {
 	boxDNS.RegisterTransport[option.ObhodDNSPoolOptions](registry, obhodPoolType, newObhodPool)
 }
@@ -149,6 +154,13 @@ func (p *obhodPool) Exchange(parent context.Context, request *dns.Msg) (*dns.Msg
 	sent := make([]bool, len(p.servers))
 	active, started := 0, 0
 	var fallback *dns.Msg
+	var negativeTimer *time.Timer
+	var negativeDeadline <-chan time.Time
+	defer func() {
+		if negativeTimer != nil {
+			negativeTimer.Stop()
+		}
+	}()
 	finishFallback := func() (*dns.Msg, error) {
 		if fallback != nil {
 			fallback.Id = request.Id
@@ -169,7 +181,9 @@ func (p *obhodPool) Exchange(parent context.Context, request *dns.Msg) (*dns.Msg
 		go func() {
 			begin := time.Now()
 			message, err := p.servers[index].Exchange(ctx, packet)
-			answers <- poolAnswer{index, message, err, time.Since(begin)}
+			// Zero is the health table's "not measured" sentinel. Very fast
+			// exchanges can take zero clock ticks, especially on Windows.
+			answers <- poolAnswer{index, message, err, max(time.Nanosecond, time.Since(begin))}
 		}()
 	}
 	// Members in sing-box obey context cancellation. Drain them before releasing
@@ -201,6 +215,11 @@ func (p *obhodPool) Exchange(parent context.Context, request *dns.Msg) (*dns.Msg
 	defer timer.Stop()
 	for {
 		select {
+		case <-negativeDeadline:
+			if parent.Err() != nil {
+				return nil, parent.Err()
+			}
+			return finishFallback()
 		case <-ctx.Done():
 			if parent.Err() == nil && fallback != nil {
 				return finishFallback()
@@ -209,9 +228,15 @@ func (p *obhodPool) Exchange(parent context.Context, request *dns.Msg) (*dns.Msg
 		case result := <-answers:
 			active--
 			valid := result.err == nil && validPoolAnswer(request, result.message)
-			success := valid && (result.message.Rcode == dns.RcodeSuccess || result.message.Rcode == dns.RcodeNameError)
-			if valid && !success && (fallback == nil || result.message.Rcode == dns.RcodeRefused) {
+			success := valid && result.message.Rcode == dns.RcodeSuccess && len(result.message.Answer) > 0
+			negative := valid && (result.message.Rcode == dns.RcodeNameError || (result.message.Rcode == dns.RcodeSuccess && !success))
+			fallbackNegative := fallback != nil && (fallback.Rcode == dns.RcodeSuccess || fallback.Rcode == dns.RcodeNameError)
+			if valid && !success && (fallback == nil || negative || (!fallbackNegative && result.message.Rcode == dns.RcodeRefused)) {
 				fallback = result.message
+			}
+			if negative && negativeTimer == nil {
+				negativeTimer = time.NewTimer(obhodPoolNegativeWait)
+				negativeDeadline = negativeTimer.C
 			}
 			p.mu.Lock()
 			h := &p.health[result.index]

@@ -6,19 +6,19 @@ export LC_ALL=C
 RUN=/var/run/obhod
 LOCK=/var/lock/obhod-update.lock
 BASE=/usr/libexec/obhod
+operation() { ucode "$BASE/operation.uc" "$@"; }
 die() { printf '%s\n' "$*" >&2; exit 1; }
 action=${2:-}
 case "$action" in check|install) ;; *) die 'Выберите check или install.' ;; esac
 mkdir -p "$RUN"; chmod 700 "$RUN"
 if [ "$1" = start ]; then
-    mkdir "$LOCK" 2>/dev/null || die 'Обновление уже выполняется.'
-    if ! mkdir /var/lock/obhod-apply.lock 2>/dev/null; then rmdir "$LOCK"; die 'Другая операция Обхода ещё выполняется.'; fi
+    token=$(operation acquire update '' "$$") || die 'Другая операция Обхода ещё выполняется.'
     work=
-    trap 'case "$work" in /tmp/obhod-update.*) rm -rf "$work";; esac; rm -f "$LOCK/pid" "$LOCK/work"; rmdir /var/lock/obhod-apply.lock "$LOCK" 2>/dev/null' EXIT
+    trap 'case "$work" in /tmp/obhod-update.*) rm -rf "$work";; esac; operation release update "$token" "$$" error "Не удалось запустить фоновое обновление. Повторите попытку."' EXIT
     work=$(mktemp -d /tmp/obhod-update.XXXXXX) || die 'Не удалось создать рабочую папку.'
     # Snapshot the worker: its installed source is replaced by the update itself.
     cp "$0" "$work/worker"
-    cp "$BASE/package-lib.sh" "$BASE/update-metadata.uc" "$work/"
+    cp "$BASE/package-lib.sh" "$BASE/update-metadata.uc" "$BASE/operation.uc" "$work/"
     chmod 700 "$work/worker"
     printf '%s\n' "$work" > "$LOCK/work"
     printf 'running\n' > "$RUN/update-state"
@@ -28,7 +28,7 @@ if [ "$1" = start ]; then
         set +u
         . /usr/share/libubox/jshn.sh
         json_init; json_add_string name obhod-update; json_add_object instances; json_add_object job
-        json_add_array command; json_add_string '' "$work/worker"; json_add_string '' worker; json_add_string '' "$action"; json_close_array
+        json_add_array command; json_add_string '' "$work/worker"; json_add_string '' worker; json_add_string '' "$action"; json_add_string '' "$token"; json_close_array
         json_add_boolean stdout 1; json_add_boolean stderr 1; json_add_int term_timeout 10
         json_close_object; json_close_object
         ubus call service set "$(json_dump)" >/dev/null
@@ -40,8 +40,12 @@ fi
 work=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 case "$work" in /tmp/obhod-update.*) ;; *) die 'Неверная рабочая папка.' ;; esac
 . "$work/package-lib.sh"
+# The update replaces installed scripts while its worker is still running.
+operation() { ucode "$work/operation.uc" "$@"; }
+token=${3:-}
+exec 9>"$LOCK/lease" || exit 1
+operation claim update "$token" "$$" || exit 1
 exec > "$RUN/update-log" 2>&1
-printf '%s\n' "$$" > "$LOCK/pid"
 result=error
 message='Обновление прервано. Профиль сохранён; проверьте состояние пакетов.'
 was_running=0
@@ -51,10 +55,7 @@ finish() {
     if [ "$stopped" = 1 ] && [ "$was_running" = 1 ]; then
         if ! /usr/libexec/obhod/control start; then result=error; message='Пакеты обработаны, но служба не запустилась. Профиль сохранён; проверьте состояние Обхода.'; fi
     fi
-    printf '%s\n' "$message" > "$RUN/update-message"
-    printf '%s\n' "$result" > "$RUN/update-state"
-    rm -f "$LOCK/pid" "$LOCK/work"
-    rmdir /var/lock/obhod-apply.lock "$LOCK" 2>/dev/null || true
+    operation release update "$token" "$$" "$result" "$message"
     cd /
     rm -rf "$work"
     if [ "$reload" = 1 ]; then

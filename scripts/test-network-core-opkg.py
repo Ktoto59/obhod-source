@@ -40,7 +40,7 @@ exec /bin/opkg-real --conf /etc/opkg.conf --offline-root / "$@"
 ''');native.chmod(0o755)
         config=lab/'etc/opkg.conf';config.write_text(config.read_text().replace('option check_signature','# offline fixture')+'\nsrc fixture file:///tmp/repo\n')
         def package(name,version):
-            binary=f'#!/bin/sh\nif [ "$1" = version ]; then echo "sing-box version {"1.13.21-obhod.3" if version.endswith("300") else "1.13.21-obhod.2" if version.endswith("200") else "1.13.21"}"; else echo dns-pool-v1; echo redirect-table-31bit; fi\n'
+            binary=f'#!/bin/sh\nif [ "$1" = version ]; then echo "sing-box version {"1.13.21-obhod.4" if version.endswith("400") else "1.13.21-obhod.3" if version.endswith("300") else "1.13.21-obhod.2" if version.endswith("200") else "1.13.21"}"; else echo dns-pool-v1; echo redirect-table-31bit; fi\n'
             control=f'Package: {name}\nVersion: {version}\nArchitecture: all\nInstalled-Size: 10000\nDescription: Isolated fixture\n'
             if name.endswith('tiny'):control+='Provides: sing-box\nConflicts: sing-box\n'
             data=builder.tar_bytes({'debian-binary':(b'2.0\n',0o644),'control.tar.gz':(builder.tar_bytes({'control':(control.encode(),0o644)}),0o644),
@@ -64,7 +64,7 @@ exec /bin/opkg-real --conf /etc/opkg.conf --offline-root / "$@"
         stub('bin/ubus',"echo '{}'")
         stub('sbin/ip','exit 0')
         stub('bin/df',"printf 'Filesystem 1024-blocks Used Available Capacity Mounted\\nroot 1048576 0 1048576 0%% /tmp\\n'")
-        stub('bin/uclient-fetch','''while [ "$#" -gt 0 ]; do case "$1" in -O) output=$2;shift;; https://*/1) file=/tmp/new.ipk;; https://*/2) file=/tmp/older.ipk;; esac;shift;done
+        stub('bin/uclient-fetch','''while [ "$#" -gt 0 ]; do case "$1" in -O) output=$2;shift;; https://*/1) file=/tmp/new.ipk;; https://*/2) file=/tmp/older.ipk;; https://*/3) file=/tmp/four.ipk;; esac;shift;done
 cp "$file" "$output"''')
         (lab/'proc/meminfo').write_text('MemTotal: 262144 kB\nMemAvailable: 196608 kB\n')
         (lab/'tmp/test.sh').write_text('''#!/bin/sh
@@ -94,6 +94,19 @@ install_compat_core
         assert '1.13.21-obhod.2' in inside('/usr/bin/sing-box','version')
         inside('/bin/sh','/tmp/test.sh','1.13.21-obhod.3')
         assert '1.13.21-obhod.3' in inside('/usr/bin/sing-box','version')
+        four,_=package('sing-box','1.13.21-400');(lab/'tmp/four.ipk').write_bytes(four)
+        catalog['version']='1.13.21-obhod.4'
+        catalog['packages'].append({**catalog['packages'][0], 'version':'1.13.21-400',
+            'url':'https://api.github.com/repos/Ktoto59/obhod-releases/releases/assets/3',
+            'sha256':hashlib.sha256(four).hexdigest(),'bytes':len(four)})
+        (lab/'tmp/catalog.json').write_text(json.dumps(catalog))
+        (lab/'tmp/reject-core').touch();inside('/bin/sh','/tmp/test.sh','1.13.21-obhod.4',ok=False)
+        assert '1.13.21-obhod.3' in inside('/usr/bin/sing-box','version')
+        (lab/'tmp/reject-core').unlink()
+        inside('/bin/sh','/tmp/test.sh','1.13.21-obhod.4')
+        assert '1.13.21-obhod.4' in inside('/usr/bin/sing-box','version')
+        inside('/bin/sh','/tmp/test.sh')
+        inside('/bin/sh','/tmp/test.sh','1.13.21-obhod.999',ok=False)
         assert (lab/'etc/obhod/settings.json').read_bytes()==settings
     print('PASS: real opkg verified rollback, tiny-to-full compatibility switch, exact old-version guard, repeat installation and profile preservation')
 

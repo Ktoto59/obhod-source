@@ -6,7 +6,7 @@ let route = json(readfile('/var/run/obhod/telemetry.json') || '{}');
 let devices = settings.options?.interfaces || ['br-lan'];
 let missing = filter(devices, name => !access('/sys/class/net/' + name));
 let intercept = !!running && !!access('/sys/class/net/obhod-tun') && !!access(work + '/firewall-ok');
-let routeOk = !!running && !!route.ok && time() - route.checkedAt < 90;
+let routeOk = !!running && !!route.ok && !!route.diagnostic && route.delay > 0 && time() - route.checkedAt < 90;
 let checks = [
     { name: 'Конфигурация', ok: access(work + '/config-ok'), message: access(work + '/config-ok') ? 'Ядро принимает сохранённые настройки.' : 'Ядро отклонило конфигурацию или не установлено.' },
     { name: 'Служба', ok: running, message: running ? 'Служба запущена и готова.' : 'Обход выключен. Включите его для проверки маршрута.' },

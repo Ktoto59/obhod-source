@@ -13,18 +13,17 @@ while ! mkdir /var/lock/obhod-dns.lock 2>/dev/null; do
 	sleep 1; attempt=$((attempt + 1))
 done
 WORK=$(mktemp -d /var/run/obhod/dns.XXXXXX) || { rmdir /var/lock/obhod-dns.lock; exit 1; }
-trap 'rm -f "$WORK/obhod_dns_work" "$WORK/.uci/obhod_dns_work"; rmdir "$WORK/.uci" "$WORK" 2>/dev/null; rmdir /var/lock/obhod-dns.lock 2>/dev/null' EXIT
+staged=
+trap 'rm -f "$staged" "$WORK/original" "$WORK/obhod_dns_work" "$WORK/.uci/obhod_dns_work"; rmdir "$WORK/.uci" "$WORK" 2>/dev/null; rmdir /var/lock/obhod-dns.lock 2>/dev/null' EXIT
 mkdir "$WORK/.uci"
 # A distinct package name prevents libuci from reading /tmp/.uci/dhcp deltas.
 # Commit this fresh snapshot, never another LuCI session's pending changes.
-cp /etc/config/dhcp "$WORK/obhod_dns_work" || exit 1
-original_hash=$(sha256sum /etc/config/dhcp)
+cp /etc/config/dhcp "$WORK/original" && cp "$WORK/original" "$WORK/obhod_dns_work" || exit 1
 uci() { command uci -c "$WORK" -t "$WORK/.uci" "$@"; }
 commit_dns() {
 	uci commit obhod_dns_work || return 1
-	[ "$(sha256sum /etc/config/dhcp)" = "$original_hash" ] || return 1
-	cp -p /etc/config/dhcp /etc/config/.dhcp.obhod || return 1
-	cat "$WORK/obhod_dns_work" > /etc/config/.dhcp.obhod && mv /etc/config/.dhcp.obhod /etc/config/dhcp
+	staged=$(mktemp /etc/config/.dhcp.obhod.XXXXXX) || return 1
+	ucode /usr/libexec/obhod/dns-commit.uc "$WORK/original" "$WORK/obhod_dns_work" "$staged"
 }
 
 append_server() { json_add_string '' "$1"; }
@@ -85,14 +84,24 @@ case "$1" in
 	restore)
 		[ -f "$BACKUP" ] || exit 0
 		load_backup || exit 1
+		# Restore only values we still own. A changed cache size must not leave
+		# dnsmasq forwarding to our now-stopped listener, or overwrite that edit.
+		[ "$manage_cache" != 1 ] || [ "$(uci -q get "obhod_dns_work.$section.cachesize")" = 0 ] || manage_cache=0
 		if is_original; then reload_dns && rm -f "$BACKUP"; exit $?; fi
-		if ! is_applied; then
+		current_servers=$(uci -q get "obhod_dns_work.$section.server")
+		owned=0; additions=
+		for server in $current_servers; do
+			if [ "$server" = '127.0.0.1#1053' ]; then owned=1; else additions="$additions $server"; fi
+		done
+		if [ "$owned" != 1 ]; then
 			logger -t obhod 'Настройки DNS изменены извне; сохранённая копия оставлена в /etc/obhod/dns-backup.json.'
 			exit 1
 		fi
 		uci -q delete "obhod_dns_work.$section.server"
-		for server in $servers; do uci add_list "obhod_dns_work.$section.server=$server" || exit 1; done
-		if [ -n "$old_noresolv" ]; then uci set "obhod_dns_work.$section.noresolv=$old_noresolv"; else uci -q delete "obhod_dns_work.$section.noresolv"; fi
+		for server in $servers $additions; do uci add_list "obhod_dns_work.$section.server=$server" || exit 1; done
+		if [ "$(uci -q get "obhod_dns_work.$section.noresolv")" = 1 ]; then
+			if [ -n "$old_noresolv" ]; then uci set "obhod_dns_work.$section.noresolv=$old_noresolv"; else uci -q delete "obhod_dns_work.$section.noresolv"; fi
+		fi
 		if [ "$manage_cache" = 1 ]; then
 			if [ -n "$old_cache" ]; then uci set "obhod_dns_work.$section.cachesize=$old_cache"; else uci -q delete "obhod_dns_work.$section.cachesize"; fi
 		fi

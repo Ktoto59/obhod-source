@@ -50,7 +50,19 @@ class UDP(socketserver.ThreadingUDPServer):
             def handle(handler):
                 self.count += 1
                 packet=handler.request[0]
-                if b'refused' in packet or b'all-servfail' in packet:
+                if (drop and (b'malformed' in packet or b'wrong-class' in packet or b'wrong-type' in packet or b'wrong-id' in packet)) or b'all-invalid' in packet:
+                    answer = bytearray(response(packet, address))
+                    end = 12
+                    while packet[end]: end += packet[end] + 1
+                    end += 5
+                    if b'wrong-class' in packet: answer[end-2:end] = b'\0\3'
+                    elif b'wrong-type' in packet: answer[end-4:end-2] = b'\0\x1c'
+                    elif b'wrong-id' in packet: answer[1] ^= 1
+                    else: answer = answer[:-1]
+                    handler.request[1].sendto(answer, handler.client_address)
+                elif b'nx-positive' in packet or b'all-nxdomain' in packet or b'nx-hang' in packet:
+                    handler.request[1].sendto(response(packet,rcode=3),handler.client_address)
+                elif b'refused' in packet or b'all-servfail' in packet:
                     handler.request[1].sendto(response(packet,rcode=5 if b'refused' in packet else 2),handler.client_address)
                 elif drop and b'servfail' in packet:
                     answer=response(packet);answer=answer[:3]+b'\x82'+answer[4:6]+b'\0\0'+answer[8:-16]
@@ -95,8 +107,10 @@ class TCP(socketserver.ThreadingTCPServer):
                         while True:
                             size = struct.unpack('!H', receive(client, 2))[0]
                             packet=receive(client,size)
+                            if b'nx-hang' in packet: continue
+                            if b'nx-positive' in packet: time.sleep(.045)
                             if b'servfail' in packet:time.sleep(0.08)
-                            answer = response(packet,rcode=5 if b'refused' in packet else 2 if b'all-servfail' in packet else 0); self.count += 1
+                            answer = response(packet,rcode=3 if b'all-nxdomain' in packet else 5 if b'refused' in packet else 2 if b'all-servfail' in packet else 0); self.count += 1
                             client.sendall(struct.pack('!H', len(answer))+answer)
                 except (OSError, EOFError): pass
                 finally:
@@ -218,6 +232,15 @@ console.log(JSON.stringify({version:1,profile,options,config}));'''
             print(f'PASS: parallel first healthy answer with one silent upstream ({elapsed:.3f}s)')
             assert query(1153,'servfail.example')=='203.0.113.42'
             print('PASS: a fast SERVFAIL does not hide a slower successful answer')
+            for tcp in [False, True]:
+                assert query(1153, 'nx-positive.example', tcp=tcp) == '203.0.113.42', 'Fast NXDOMAIN masked a positive answer'
+                began = time.monotonic()
+                assert query(1153, 'all-nxdomain.example', tcp=tcp, rcode=True) == 3
+                assert time.monotonic() - began < 1, 'All-negative replies must not wait for the full timeout'
+                began = time.monotonic()
+                assert query(1153, 'nx-hang.example', tcp=tcp, rcode=True) == 3
+                assert time.monotonic() - began < 1, 'A silent loser must not delay a real NXDOMAIN for four seconds'
+            print('PASS: UDP/TCP positive answers beat fast NXDOMAIN; bounded negative grace with a silent loser')
             assert query(1153,'refused.example',rcode=True)==5
             assert query(1053,'refused.example',kind=65,rcode=True)==5
             assert query(1153,'all-servfail.example',rcode=True)==2
@@ -236,9 +259,27 @@ console.log(JSON.stringify({version:1,profile,options,config}));'''
             assert query(1153,'large-pool.example',tcp=True)=='203.0.113.42'
             assert query(1053,'large-client.example',tcp=True)=='203.0.113.42'
             print('PASS: large DNS replies survive TCP forwarding and UDP-to-TCP fallback')
-            with ThreadPoolExecutor(max_workers=16) as workers:
-                assert all(value=='203.0.113.42' for value in workers.map(lambda i:query(1153,f'race{i}.example'),range(32)))
-            print('PASS: simultaneous queries with identical client IDs stay isolated')
+            helpers = processes[:-1]
+            def descriptors(): return [len(list(Path(f'/proc/{p.pid}/fd').iterdir())) for p in helpers]
+            before_fd = descriptors()
+            with ThreadPoolExecutor(max_workers=32) as workers:
+                assert all(value=='203.0.113.42' for value in workers.map(lambda i:query(1153,f'race{i}.example'),range(256)))
+            # Cancel TCP clients while their negative-answer races are pending.
+            question = b'\x07nx-hang\x07example\0\0\1\0\1'
+            packet = b'\x42\x42\x01\x00\x00\x01'+b'\0'*6+question
+            canceled = 0
+            for _ in range(64):
+                try:
+                    with socket.create_connection(('127.0.0.1', 1153), .1) as client:
+                        client.sendall(struct.pack('!H', len(packet))+packet)
+                        canceled += 1
+                except (TimeoutError, ConnectionResetError, BrokenPipeError): pass  # Bounded accept backlog/admission.
+            assert canceled > 0
+            deadline = time.monotonic() + 1
+            while helpers and any(a > b + 8 for a,b in zip(descriptors(),before_fd)) and time.monotonic() < deadline: time.sleep(.01)
+            assert all(a <= b + 8 for a,b in zip(descriptors(),before_fd)), (before_fd,descriptors())
+            assert query(1153, 'after-cancellations.example') == '203.0.113.42', 'Helper must remain usable after canceled TCP clients'
+            print(f'PASS: 256 parallel client queries preserve IDs/questions; {canceled} canceled TCP races release helper sockets')
             before=healthy.count
             socks.shutdown();socks.close_clients();socks.server_close()
             try: answer=query(1154,'no-leak.example',timeout=2)
@@ -277,6 +318,18 @@ console.log(JSON.stringify({version:1,profile,options,config}));'''
             print('PASS: cold rule-set download completes before main DNS listeners start')
             assert query(1153 if native_core else 12053,'hostname-resolved.example')=='203.0.113.42'
             assert query(1155,'bootstrap-answer.example')=='127.0.0.1' and bootstrap.count>0
+            for bad in ['malformed', 'wrong-class', 'wrong-type', 'wrong-id']:
+                assert query(1155, bad+'.example') == '127.0.0.1', 'Untrusted bootstrap response was accepted: '+bad
+            began = time.monotonic()
+            try: invalid = query(1155, 'all-invalid.example', timeout=5, rcode=True)
+            except TimeoutError:
+                # Native transports report a transport error. sing-box's DNS
+                # hijacker may discard it; the UDP helper emits SERVFAIL itself.
+                assert native_core
+                invalid = None
+            assert invalid == 2 or (native_core and invalid is None)
+            assert time.monotonic() - began < (5.3 if native_core else 4.8)
+            print('PASS: raw bootstrap rejects malformed packets, wrong ID/QTYPE/QCLASS and bounds all-invalid exchanges')
             assert query(1053,'selected.example').startswith('198.18.')
             print('PASS: bootstrap has its own parallel failover and cannot recurse through FakeIP')
             rss=[]
@@ -290,6 +343,10 @@ console.log(JSON.stringify({version:1,profile,options,config}));'''
             print('PASS: automatic selection and cleanup when returning to single DNS')
             core_log.close();pool_log.close()
     finally:
+        if 'pool_log' in locals() and not pool_log.closed:
+            pool_log.flush(); pool_log.seek(0)
+            print('DNS helper failure log:', pool_log.read())
+            pool_log.close()
         for process in processes:
             if process.poll() is None:process.terminate()
         for process in processes:

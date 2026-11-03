@@ -10,7 +10,7 @@ const { spawn } = require('node:child_process');
 const { once } = require('node:events');
 const { parseProxyUri } = require('../shared/profile');
 const { defaultRouterProfile, generateRouterConfig } = require('../openwrt/lib/config');
-const binary = path.join(__dirname, '../windows/runtime/sing-box.exe');
+const binary = process.env.OBHOD_TEST_CORE || path.join(__dirname, '../windows/runtime/sing-box.exe');
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function listen(server) { server.listen(0, '127.0.0.1'); await once(server, 'listening'); return server.address().port; }
 async function bind(socket) { socket.bind(0, '127.0.0.1'); await once(socket, 'listening'); return socket.address().port; }
@@ -104,7 +104,11 @@ test('FakeIP keeps TCP/UDP on the selected tunnel without SNI and preserves name
     }
     throw new Error('Core failed to start: ' + stderr);
   }
-  async function stop() { if (!child) return; const exited = once(child, 'exit'); child.kill(); await exited; child = null; }
+  async function stop() {
+    if (!child) return;
+    if (child.exitCode === null && child.signalCode === null) { const exited = once(child, 'exit'); child.kill(); await exited; }
+    child = null;
+  }
   async function tcp(ip, host) {
     const { socket, read } = await socks(port, 1, ip, targetPort);
     try {

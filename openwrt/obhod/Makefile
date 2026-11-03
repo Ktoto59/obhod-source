@@ -32,6 +32,7 @@ define Package/obhod/install
 	$(INSTALL_BIN) ./files/usr/libexec/rpcd/obhod $(1)/usr/libexec/rpcd/obhod
 	$(INSTALL_DIR) $(1)/usr/share/obhod
 	$(INSTALL_DATA) ./files/usr/share/obhod/version $(1)/usr/share/obhod/version
+	$(INSTALL_DATA) ./files/usr/share/obhod/core-catalog.json $(1)/usr/share/obhod/core-catalog.json
 endef
 
 define Package/obhod/postinst

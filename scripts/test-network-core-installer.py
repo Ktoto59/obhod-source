@@ -53,6 +53,7 @@ set -eu
 die() { echo "$*" >&2; exit 1; }
 work=/tmp/work
 core=${1:-sing-box-tiny}
+compat_requested=${3:-auto}
 manager=apk
 compat_catalog=/tmp/catalog.json
 compat_selector=/usr/libexec/obhod/core-select.uc
@@ -88,6 +89,10 @@ echo "SELECTED=$compat"
             package['version']='1.13.21-r400'
         catalog['version']='1.13.21-obhod.4';catalog_path.write_text(json.dumps(catalog))
         assert 'SELECTED=1' in run(), 'The local .4 catalog supports automatic same-version flavor changes'
+        (lab/'tmp/core.apk').write_bytes(artifact)
+        for core in ['sing-box', 'sing-box-tiny']:
+            assert 'SELECTED=1' in run(core, 'install', '1.13.21-obhod.4')
+        assert 'SELECTED=0' in run('sing-box', '', '1.13.21-obhod.999')
         for package in catalog['packages']:
             package['version']='1.13.21-r300'
         catalog.pop('version');catalog_path.write_text(json.dumps(catalog))

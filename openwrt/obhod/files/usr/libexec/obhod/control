@@ -5,6 +5,7 @@ umask 077
 
 STATE=/etc/obhod/settings.json
 RUN=/var/run/obhod
+operation() { ucode /usr/libexec/obhod/operation.uc "$@"; }
 
 error() {
 	printf '%s\n' "$1" > "$RUN/error"
@@ -60,10 +61,11 @@ prepare() {
 	}
 	# An unchanged save is safe only for the sources which prepared this run.
 	# App updates and external settings edits must still take the restart path.
-	sha256sum "$STATE" /usr/libexec/obhod/prepare.uc /usr/libexec/obhod/kernel-route.uc \
-		/usr/libexec/obhod/native-dns.uc /usr/libexec/obhod/dns-pool-config.uc \
-		/usr/libexec/obhod/dns-pool.uc /usr/libexec/obhod/control /usr/libexec/obhod/run \
-		/etc/init.d/obhod > "$RUN/prepared.sha.tmp" && mv "$RUN/prepared.sha.tmp" "$RUN/prepared.sha"
+	set -- "$STATE" "$RUN/config.json" /usr/bin/sing-box /usr/share/obhod/version \
+        /usr/libexec/obhod/* /etc/init.d/obhod
+	# The backend can also be installed without the optional LuCI package.
+	[ ! -f /www/luci-static/resources/obhod/core.js ] || set -- "$@" /www/luci-static/resources/obhod/core.js
+	sha256sum "$@" > "$RUN/prepared.sha.tmp" && mv "$RUN/prepared.sha.tmp" "$RUN/prepared.sha"
 }
 
 ready() {
@@ -81,6 +83,9 @@ set_enabled() {
 }
 
 stop_and_wait() {
+	# Do not turn off the listener while dnsmasq still depends on it. A failed
+	# transaction must leave the running service available for a safe retry.
+	/usr/libexec/obhod/dns restore || { error 'Не удалось восстановить DNS; служба оставлена работающей. Повторите остановку после проверки DNS.'; return 1; }
 	pid=$(cat "$RUN/run-pid" 2>/dev/null)
 	[ -n "$pid" ] || pid=$(ubus call service list '{"name":"obhod"}' 2>/dev/null | jsonfilter -e '@.obhod.instances.main.pid')
 	/etc/init.d/obhod stop >/dev/null 2>&1 || return 1
@@ -100,8 +105,10 @@ recover() {
 		case "$1" in *[!a-zA-Z0-9_-]*) return 1;; esac
 		[ "$(ubus call "network.interface.$1" status 2>/dev/null | jsonfilter -e '@.up')" = true ] || return 0
 	fi
-	mkdir /var/lock/obhod-apply.lock 2>/dev/null || return 0
-	trap 'rmdir /var/lock/obhod-apply.lock 2>/dev/null' EXIT
+	token=$(operation acquire apply '' "$$") || return 0
+	trap 'operation release apply "$token" "$$"' EXIT
+	exec 9>/var/lock/obhod-apply.lock/lease || return 1
+	operation hold apply "$token" "$$" || return 1
 	[ "$(uci -q get obhod.main.enabled)" = 1 ] || return 0
 	pid=$(cat "$RUN/run-pid" 2>/dev/null)
 	case "$pid" in ''|*[!0-9]*) pid= ;; esac
@@ -135,7 +142,7 @@ case "$1" in
 		exit 1
 		;;
 	stop)
-		set_enabled 0 && stop_and_wait
+		stop_and_wait && set_enabled 0
 		;;
 	*) exit 2 ;;
 esac

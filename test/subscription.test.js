@@ -98,7 +98,7 @@ test('cancels a streaming response when the size limit is reached', async () => 
 });
 
 test('bundled sing-box accepts a V2Ray subscription as a failover group', {
-  skip: !fs.existsSync(path.join(__dirname, '..', 'windows/runtime', 'sing-box.exe'))
+  skip: !fs.existsSync((process.env.OBHOD_TEST_CORE || path.join(__dirname, '..', 'windows/runtime', 'sing-box.exe')))
 }, () => {
   const config = structuredClone(DEFAULT_CONFIG);
   config.tunnels = parseSubscription(`${uri}\n${second}`);
@@ -110,7 +110,7 @@ test('bundled sing-box accepts a V2Ray subscription as a failover group', {
   try {
     const filePath = path.join(directory, 'config.json');
     fs.writeFileSync(filePath, stringifyConfig(config));
-    const result = spawnSync(path.join(__dirname, '..', 'windows/runtime', 'sing-box.exe'), ['check', '-c', filePath], { encoding: 'utf8', windowsHide: true });
+    const result = spawnSync((process.env.OBHOD_TEST_CORE || path.join(__dirname, '..', 'windows/runtime', 'sing-box.exe')), ['check', '-c', filePath], { encoding: 'utf8', windowsHide: true });
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.equal(stringifyConfig(config, true).includes(uuid), false);
   } finally {

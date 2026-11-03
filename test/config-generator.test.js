@@ -34,6 +34,27 @@ const appConfig = {
   }
 };
 
+test('failover DNS never inherits a WireGuard resolver from an unavailable primary or group member', () => {
+  const a = { ...tunnel, type: 'wireguard', dns: ['10.8.0.1'] };
+  const b = { id: 'b', type: 'socks5', name: 'B', server: '192.0.2.20', serverPort: 1080 };
+  const c = { ...b, id: 'c', name: 'C', server: '192.0.2.30' };
+  for (const members of [[b, c], [{ ...b, type: 'http' }, c], [{ ...a, id: 'b', dns: ['10.9.0.1'] }, c], [a, { ...a, id: 'c', dns: ['10.9.0.1'] }]]) {
+    const input = { ...appConfig, tunnels: [a, ...members.filter(m => m.id !== a.id)], routing: {
+      ...appConfig.routing, failoverEnabled: true, failoverTunnelIds: members.map(m => m.id), dnsResolverEnabled: false
+    } };
+    const config = generateConfig(input);
+    assert.deepEqual(config.dns.servers.find(s => s.tag === 'proxy-dns'), {
+      tag: 'proxy-dns', type: 'tcp', server: '8.8.8.8', detour: 'proxy'
+    });
+    assert.deepEqual(config.outbounds.find(o => o.tag === 'proxy').outbounds, members.map(m => `tunnel-${m.id}`));
+    for (const outbound of [...config.outbounds, ...config.endpoints].filter(o => o.domain_resolver)) {
+      assert.equal(outbound.domain_resolver.server, 'direct-dns', 'proxy host bootstrap cannot depend on failover DNS');
+    }
+  }
+  const fixed = generateConfig({ ...appConfig, tunnels: [a] });
+  assert.equal(fixed.dns.servers.find(s => s.tag === 'proxy-dns').server, '10.8.0.1');
+});
+
 test('normalizes structured routing configuration', () => {
   const value = validateConfig(appConfig);
   assert.deepEqual(value.routing.localLists[0].domains, ['chat.example', 'video.example']);

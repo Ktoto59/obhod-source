@@ -120,11 +120,16 @@ def main(binary):
         def queued(chain='prerouting_prematch'):
             rules = json.loads(run('nft', '-j', 'list', 'chain', 'inet', 'sing-box', chain))['nftables']
             return sum(e['counter']['packets'] for r in rules if 'rule' in r for e in r['rule']['expr'] if 'counter' in e and any('queue' in item for item in r['rule']['expr']))
-        def wait_core(core, log):
+        def wait_core(core, log, offset=0):
             deadline = time.monotonic() + 15
             while time.monotonic() < deadline:
                 if core.poll() is not None: log.seek(0); raise AssertionError(log.read())
-                if run('nft', 'list', 'chain', 'inet', 'sing-box', 'prerouting_prematch', check=False): return
+                # After SIGKILL an old table can still exist. Require the new
+                # process's startup record, using an independent reader so we
+                # do not move the child's shared output file offset.
+                with open(log.name) as reader:
+                    reader.seek(offset); started = 'sing-box started' in reader.read()
+                if started and run('nft', 'list', 'chain', 'inet', 'sing-box', 'prerouting_prematch', check=False): return
                 time.sleep(.1)
             raise AssertionError('Core did not become ready')
         with tempfile.TemporaryDirectory(prefix='obhod-kernel-route-') as temp:
@@ -220,12 +225,30 @@ def main(binary):
                     # source is unavailable and its last response was invalid.
                     lists_server.terminate(); lists_server.wait(timeout=5)
                     log = open(temp/'core.log', 'a+')
+                    offset = os.fstat(log.fileno()).st_size
                     core = subprocess.Popen([binary, 'run', '-c', str(file)], stdout=log, stderr=log); children.append(core)
-                    wait_core(core, log)
+                    wait_core(core, log, offset)
                     assert request('tcp', '198.51.100.2') == '192.0.2.1'
                     assert request('udp', '198.51.100.130') == '10.10.0.2'
                     assert request('udp', '8.8.8.8', 'selected.example') == fake
+                    # SIGKILL cannot run sing-box's nftables cleanup. The next
+                    # instance must replace its stale table and restore sets,
+                    # TUN routing and cached FakeIP without broad interception.
+                    core.kill(); core.wait(timeout=5)
+                    offset = os.fstat(log.fileno()).st_size
+                    core = subprocess.Popen([binary, 'run', '-c', str(file)], stdout=log, stderr=log); children.append(core)
+                    wait_core(core, log, offset)
+                    before = queued()
+                    assert request('udp', '198.51.100.130') == '10.10.0.2'
+                    assert queued() == before, 'Direct traffic stays outside NFQUEUE after SIGKILL recovery'
+                    assert request('tcp', '198.51.100.2') == '192.0.2.1'
+                    assert request('udp', fake) in ['192.0.2.1', 'fd00:20::1']
                     core.terminate(); core.wait(timeout=10); log.close()
+                    assert not run('nft', 'list', 'table', 'inet', 'sing-box', check=False)
+                    assert 'obhod-tun' not in run('ip', 'link')
+                    assert not any(rule.get('priority') == 1 for rule in json.loads(run('ip', '-j', 'rule'))), 'SIGKILL must not leak per-instance redirect policy rules after the next stop'
+                    assert not any(rule.get('priority') == 1 for rule in json.loads(run('ip', '-6', '-j', 'rule'))), 'IPv6 redirect policy rules must also be recovered and cleaned'
+                    print('PASS: SIGKILL recovery replaces stale nftables, restores cached selected routes and keeps direct traffic out of NFQUEUE', flush=True)
                     print('PASS: invalid update retains last good rules; cached JSON/SRS and FakeIP restore without the list server', flush=True)
                 remote.write_text(json.dumps({'version': 3, 'rules': [{'ip_cidr': ['198.51.100.130/32']}]}))
                 print(f'PASS IPv6={ipv6}: LAN/router output first-packet kernel bypass, TCP/UDP, FakeIP/DNS, JSON/SRS, live update and stop cleanup', flush=True)

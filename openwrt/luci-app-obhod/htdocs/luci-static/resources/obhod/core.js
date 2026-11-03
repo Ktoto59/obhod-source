@@ -558,7 +558,9 @@ function makeAwgEndpoint(tunnel, tag = 'proxy') {
 
 function makeProxyDnsServer(config, proxyTag, fallbackServer) {
   if (!config.routing.dnsResolverEnabled) {
-    return { tag: 'proxy-dns', type: 'udp', server: fallbackServer || '8.8.8.8', detour: proxyTag };
+    // Every supported group member can carry TCP, including HTTP CONNECT and
+    // SOCKS servers without UDP ASSOCIATE. A fixed peer keeps its original DNS.
+    return { tag: 'proxy-dns', type: config.routing.failoverEnabled ? 'tcp' : 'udp', server: fallbackServer || '8.8.8.8', detour: proxyTag };
   }
   const server = {
     tag: 'proxy-dns', type: config.routing.dnsProtocol, server: config.routing.dnsServer, detour: proxyTag
@@ -583,7 +585,10 @@ function generateConfig(input) {
     ? config.routing.failoverTunnelIds.map((id) => config.tunnels.find((item) => item.id === id)).filter(Boolean)
     : [tunnel];
   const ipv4Only = selectedTunnels.every((item) => !isWireGuardFamily(item) || item.networkFamily !== 'dual');
-  const proxyDns = isWireGuardFamily(tunnel)
+  // A urltest group can select any member, including one which cannot reach a
+  // different WireGuard peer's private resolver. Use the public default through
+  // the group; explicit DNS settings still take precedence in makeProxyDnsServer.
+  const proxyDns = !config.routing.failoverEnabled && isWireGuardFamily(tunnel)
     ? (ipv4Only ? tunnel.dns.find((value) => !value.includes(':')) : tunnel.dns[0]) : null;
   const proxyTag = config.routing.failoverEnabled ? 'proxy' : tunnelTag(tunnel);
   const enabledApplicationRules = config.routing.trafficMode === 'tun'
@@ -936,6 +941,16 @@ function configureFakeIp(config, profile, options) {
     early.push(...ipRoutes.map(rule => ({ ...rule })));
   }
   config.route.rules.splice(config.route.rules.findIndex(rule => rule.action === 'sniff'), 0, ...early);
+  // Sniff can add a domain, so domain/rule-set matches need a second pass.
+  // It does not change the destination IP. Identical terminal IP/private rules
+  // which already ran before sniff cannot match for the first time afterwards.
+  const terminalIps = new Set();
+  config.route.rules = config.route.rules.filter(rule => {
+    if (rule.action !== 'route' || !(rule.ip_cidr || rule.ip_is_private)) return true;
+    const key = JSON.stringify(rule);
+    if (terminalIps.has(key)) return false;
+    terminalIps.add(key); return true;
+  });
 }
 
 function defaultRouterProfile() {

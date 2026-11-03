@@ -45,9 +45,56 @@ def prepare(box, tun, sing, destination):
             replace('route/dns.go', '\t\tmetadata.Destination = M.Socksaddr{}\n', '\t\tmetadata.Destination = M.Socksaddr{}\n\t\tnatConn.SetTimeout(C.ProtocolTimeouts[C.ProtocolDNS])\n')
             replace('route/dns.go', 'func (h *dnsHijacker) NewPacketEx(buffer *buf.Buffer, destination M.Socksaddr) {',
                 'func (h *dnsHijacker) NewPacketEx(buffer *buf.Buffer, destination M.Socksaddr) {\n\tif natConn, ok := h.conn.(udpnat.Conn); ok { natConn.SetTimeout(C.ProtocolTimeouts[C.ProtocolDNS]) }')
+            # A consumed metadata key invalidates all cached FakeIP on SIGKILL.
+            # Keep it, and commit the allocation cursor in the SAME transaction
+            # as the mapping so a crash cannot reuse a previously issued IP.
+            replace('experimental/cachefile/fakeip.go', '\t\terr := bucket.Delete(keyMetadata)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n', '')
+            replace('experimental/cachefile/fakeip.go', 'func (c *CacheFile) FakeIPStore(address netip.Addr, domain string) error {', '''func (c *CacheFile) FakeIPStore(address netip.Addr, domain string) error {
+    return c.fakeIPStore(address, domain, nil)
+}
+
+func (c *CacheFile) FakeIPStoreWithMetadata(address netip.Addr, domain string, metadata *adapter.FakeIPMetadata) error {
+    return c.fakeIPStore(address, domain, metadata)
+}
+
+func (c *CacheFile) fakeIPStore(address netip.Addr, domain string, metadata *adapter.FakeIPMetadata) error {''')
+            replace('experimental/cachefile/fakeip.go', '\t\toldDomain := bucket.Get(address.AsSlice())', '''        if metadata != nil {
+            encoded, err := metadata.MarshalBinary()
+            if err != nil { return err }
+            if err = bucket.Put(keyMetadata, encoded); err != nil { return err }
+        }
+        oldDomain := bucket.Get(address.AsSlice())''')
+            replace('dns/transport/fakeip/store.go', '''	err := s.storage.FakeIPStore(address, domain)
+	if err != nil {
+		s.logger.Warn("save FakeIP cache: ", err)
+	}
+	s.storage.FakeIPSaveMetadataAsync(&adapter.FakeIPMetadata{''', '''    metadata := &adapter.FakeIPMetadata{''')
+            replace('dns/transport/fakeip/store.go', '''		Inet6Current: s.inet6Current,
+	})
+	return address, nil''', '''        Inet6Current: s.inet6Current,
+    }
+    var err error
+    if transactional, ok := s.storage.(interface {
+        FakeIPStoreWithMetadata(netip.Addr, string, *adapter.FakeIPMetadata) error
+    }); ok {
+        err = transactional.FakeIPStoreWithMetadata(address, domain, metadata)
+    } else {
+        err = s.storage.FakeIPStore(address, domain)
+        s.storage.FakeIPSaveMetadataAsync(metadata)
+    }
+    if err != nil { return netip.Addr{}, err }
+    return address, nil''')
         elif project == 'sing-tun':
             with (target/'go.mod').open('a',encoding='utf-8') as f:f.write('\nreplace github.com/sagernet/sing => ../sing\n')
             replace('redirect_route_linux.go', 'int(rand.Uint32())', 'int(rand.Uint32() & 0x7fffffff)')
+            replace('redirect_route_linux.go', 'func (r *autoRedirect) setupRedirectRoutes() error {',
+                'func (r *autoRedirect) setupRedirectRoutes() error {\n\tif err := r.cleanupObhodRedirectRoutes(); err != nil { return E.Cause(err, "recover Obhod redirect routes") }')
+            replace('redirect_route_linux.go', 'if r.redirectRouteTableIndex == r.tunOptions.IPRoute2TableIndex {',
+                'if r.redirectRouteTableIndex < 256 || r.redirectRouteTableIndex == r.tunOptions.IPRoute2TableIndex {')
+            replace('redirect_route_linux.go', '\t\troute := &routesToAdd[index]\n\t\terr = netlink.RouteAppend(route)',
+                '\t\troute := &routesToAdd[index]\n\t\tif r.tunOptions.Name == "obhod-tun" { route.Protocol = obhodRedirectProtocol }\n\t\terr = netlink.RouteAppend(route)')
+            replace('redirect_route_linux.go', '\tfor _, route := range routes {\n\t\t_ = netlink.RouteDel(&route)',
+                '\tfor _, route := range routes {\n\t\tif r.tunOptions.Name == "obhod-tun" && !obhodOwnedRedirectRoute(route) { continue }\n\t\t_ = netlink.RouteDel(&route)')
             replace('redirect_nftables.go', '\tqueueExpression := func() *expr.Queue {',
                 '\tif err := r.nftablesPreMatchAddressFilter(nft, table, chain, isPrerouting); err != nil {\n\t\treturn err\n\t}\n\n\tqueueExpression := func() *expr.Queue {')
             replace('stack_system.go', 'udpnat.New(s.handler, s.preparePacketConnection, s.udpTimeout, false)', 'udpnat.NewDNSIsolated(s.handler, s.preparePacketConnection, s.udpTimeout, false)')

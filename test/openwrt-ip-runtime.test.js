@@ -37,7 +37,11 @@ test('selected IP supports server-first TCP without the old sniff delay', { skip
     config.inbounds = [{ type: 'direct', tag: 'fixture', listen: '127.0.0.1', listen_port: port, override_address: '192.0.2.55', override_port: targetPort }];
     if (legacy) {
       const sniff = config.route.rules.findIndex(r => r.action === 'sniff');
+      const ipRules = config.route.rules.slice(0, sniff).filter(r => r.ip_cidr || r.ip_is_private);
       config.route.rules = config.route.rules.filter((r, index) => index >= sniff || (!r.ip_cidr && !r.ip_is_private));
+      // Reconstruct the old order explicitly: the current generator no longer
+      // leaves redundant copies after sniff for this fixture to rely on.
+      config.route.rules.push(...ipRules);
     }
     const file = path.join(directory, 'config.json'); fs.writeFileSync(file, JSON.stringify(config));
     let errors = '';

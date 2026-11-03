@@ -347,10 +347,10 @@ return view.extend({
     this.statusDetail.textContent = value.error || (value.jobBusy ? value.jobMessage : '') || value.version || 'Сначала установите ядро протоколов';
     var fresh = Number(value.routeCheckedAt) > 0 && Date.now()/1000 - Number(value.routeCheckedAt) < 90;
     this.liveRoute.textContent = !value.running ? 'Маршрут неактивен' : value.routeName || 'Проверяем маршрут…';
-    this.liveDelay.textContent = value.running && fresh ? (value.routeOk && value.routeDelay !== '' ? value.routeDelay + ' мс' : 'нет ответа') : '';
+    this.liveDelay.textContent = value.running && fresh ? (value.routeOk ? (value.routeDelay !== '' ? value.routeDelay + ' мс' : 'нет замера') : 'нет ответа') : '';
     this.overviewLiveRoute.textContent = this.liveRoute.textContent;
     this.overviewLiveDelay.textContent = this.liveDelay.textContent;
-    this.routeDetail.title = fresh ? 'HTTPS-проверка: ' + new Date(Number(value.routeCheckedAt)*1000).toLocaleTimeString('ru-RU') : 'Проверка маршрута выполняется раз в 30 секунд.';
+    this.routeDetail.title = fresh ? 'Телеметрия ядра: ' + new Date(Number(value.routeCheckedAt)*1000).toLocaleTimeString('ru-RU') : 'Ожидаем телеметрию ядра. Активная HTTPS-проверка доступна в диагностике.';
     this.coreState.textContent = (value.coreFlavor || (value.version ? 'Своё ядро sing-box' : 'Ядро не установлено')) + (value.version?' · '+value.version.replace(/^sing-box version /,''):'')
       + (value.coreMessage ? ' · ' + value.coreMessage : '');
     var busy=!!(value.coreBusy || value.updateBusy || value.jobBusy);

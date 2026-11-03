@@ -2,6 +2,13 @@
 import { readfile, writefile } from 'fs';
 let settings = json(readfile('/etc/obhod/settings.json'));
 let config = settings.config;
+// Saved profiles carry a generated graph too. Apply the failover DNS correction
+// in RAM so old profiles do not need a flash rewrite or a manual LuCI save.
+if (settings.profile.routing?.failoverEnabled && !settings.profile.routing?.dnsResolverEnabled) {
+    for (let dns in config.dns?.servers || []) if (dns.tag == 'proxy-dns' && dns.type == 'udp') {
+        dns.server = '8.8.8.8'; dns.type = 'tcp';
+    }
+}
 let secret = trim(readfile('/var/run/obhod/controller-secret'));
 if (!match(secret, /^[a-f0-9-]{32,36}$/)) die('Missing controller secret');
 config.experimental ||= {};
@@ -75,4 +82,13 @@ if (sniff >= 0) {
         splice(config.route.rules, sniff, 0, ...private, ...ips);
     }
 }
+// Preserve the second domain/rule-set pass after sniff. Only immutable terminal
+// IP matches are redundant once an identical earlier rule has already run.
+let terminalIPs = [];
+config.route.rules = filter(config.route.rules, r => {
+    if (r.action != 'route' || !(r.ip_cidr || r.ip_is_private)) return true;
+    let key = sprintf('%J', r);
+    if (index(terminalIPs, key) >= 0) return false;
+    push(terminalIPs, key); return true;
+});
 writefile('/var/run/obhod/config.json', sprintf('%J\n', config));

@@ -2,7 +2,7 @@
 import { readfile } from 'fs';
 let catalog=json(readfile(ARGV[0]));
 if (catalog.schema != 1) die('Unsupported core catalog');
-let rows=filter(catalog.packages || [],p=>p.arch==ARGV[1] && p.manager==ARGV[2] && (ARGV[3]=='list' || p.profile==ARGV[3]) && index(p.releases || [],ARGV[4])>=0);
+let rows=filter(catalog.packages || [],p=>ARGV[3]=='validate' || (p.arch==ARGV[1] && p.manager==ARGV[2] && (ARGV[3]=='list' || p.profile==ARGV[3]) && index(p.releases || [],ARGV[4])>=0));
 for (let p in rows) {
     let version=match(p.version || '',/^1\.13\.21-(r)?(200|300|400)$/);
     if (!version || !match(p.url || '',/^https:\/\/api\.github\.com\/repos\/Ktoto59\/obhod-releases\/releases\/assets\/[0-9]+$/) ||
@@ -11,6 +11,10 @@ for (let p in rows) {
     let expected='1.13.21-obhod.'+(version[2]=='400'?'4':version[2]=='300'?'3':'2');
     if (p.coreVersion && p.coreVersion!=expected) die('Invalid core version');
     p.coreVersion=expected;
+}
+if (ARGV[3]=='validate') {
+    let wanted=ARGV[5]=='auto' ? catalog.version : ARGV[5];
+    exit(length(filter(rows,p=>p.coreVersion==wanted)) ? 0 : 1);
 }
 if (ARGV[3]=='list') {
     printf('%J\n',{ versions: map(rows,p=>({value:p.coreVersion,profile:p.profile,recommended:p.coreVersion==catalog.version,

@@ -21,7 +21,7 @@ if (bootstrap) {
 }
 if (ARGV[1] == '--check') exit(0);
 
-const LIMIT = 64, TIMEOUT = 4000;
+const LIMIT = 64, TIMEOUT = 4000, NEGATIVE_WAIT = 200;
 let pending = {}, clients = {}, streams = [], sources = [];
 let sequence = 0, counter = 0, clientSequence = 0;
 function now() { let c = clock(true); return c[0] * 1000.0 + c[1] / 1000000.0; }
@@ -38,6 +38,43 @@ function question(data) {
     }
     if (offset + 4 > length(data)) return null;
     return { key: lc(substr(data, 12, offset - 12)) + substr(data, offset, 4), end: offset + 4 };
+}
+function nameEnd(data, offset) {
+    let end = null, size = 0;
+    for (let hops = 0; hops < 128 && offset < length(data); hops++) {
+        let n = ord(data, offset++);
+        if (!n) return end || offset;
+        if ((n & 192) == 192) {
+            if (offset >= length(data)) return null;
+            end ||= offset + 1;
+            let target = ((n & 63) << 8) | ord(data, offset);
+            if (target >= offset - 1) return null;
+            offset = target; continue;
+        }
+        if (n > 63 || offset + n > length(data) || (size += n + 1) > 254) return null;
+        offset += n;
+    }
+    return null;
+}
+function validPacket(data, parsed) {
+    let offset = parsed.end, count = word(data, 6) + word(data, 8) + word(data, 10);
+    for (let i = 0; i < count; i++) {
+        offset = nameEnd(data, offset);
+        if (!offset || offset + 10 > length(data)) return false;
+        let kind = word(data, offset), size = word(data, offset + 8);
+        if ((kind == 1 && size != 4) || (kind == 28 && size != 16)) return false;
+        let start = offset + 10, end = start + size;
+        if (end > length(data)) return false;
+        if (index([2, 5, 12, 39], kind) >= 0 && nameEnd(data, start) != end) return false;
+        if (kind == 15 && (size < 3 || nameEnd(data, start + 2) != end)) return false;
+        if (kind == 33 && (size < 7 || nameEnd(data, start + 6) != end)) return false;
+        if (kind == 6) {
+            let first = nameEnd(data, start), second = first ? nameEnd(data, first) : null;
+            if (!second || second + 20 != end) return false;
+        }
+        offset = end;
+    }
+    return offset == length(data);
 }
 function failure(packet, q) {
     return substr(packet, 0, 2) + sprintf('%c%c', 128 | (ord(packet, 2) & 121), 130 | (ord(packet, 3) & 16)) + bytes(1) + bytes(0) + bytes(0) + bytes(0) + substr(packet, 12, q.end - 12);
@@ -57,17 +94,18 @@ function sourceSocket(source, kind) {
 }
 for (let server in config.servers) {
     let source = { address: bootstrap ? server.address : '127.0.0.1', port: bootstrap ? server.port : server, score: 250, failures: 0 };
-    source.fd = sourceSocket(source, socket.SOCK_DGRAM);
-    if (source.fd) source.connected = !!source.fd.connect({ address: source.address, port: source.port });
     push(sources, source);
 }
 function closeStream(stream) { if (!stream.closed) { stream.closed = true; stream.fd.close(); } }
+// ucode binds functions in declaration order. closeClient and finish call each
+// other; capture a declared local instead of an unresolved global function.
+let finish;
 function closeClient(client) {
     if (client.closed) return;
     client.closed = true; client.fd.close(); delete clients[client.id];
     for (let id in keys(pending)) if (pending[id]?.client == client) finish(pending[id], null);
 }
-function finish(q, response) {
+finish = function(q, response) {
     if (q.done) return;
     q.done = true; delete pending[q.id];
     for (let stream in streams) if (stream.query == q) closeStream(stream);
@@ -79,15 +117,19 @@ function finish(q, response) {
     let frame = bytes(length(response)) + response;
     if (length(q.client.output) + length(frame) > 262148) { closeClient(q.client); return; }
     q.client.output += frame;
-}
+};
 function attempt(q, index) {
     if (q.done || q.sent[index]) return;
     let source = sources[index], packet = bytes(q.id) + substr(q.packet, 2);
     q.sent[index] = now();
     if (!q.client) {
-        if (!source.fd) source.fd = sourceSocket(source, socket.SOCK_DGRAM);
-        if (source.fd && !source.connected) source.connected = !!source.fd.connect({ address: source.address, port: source.port });
-        if (!source.connected || source.fd.send(packet) != length(packet)) q.failed[index] = true;
+        // Dedicated connected sockets isolate clients even after the 16-bit ID
+        // wraps. Closing a race also discards late replies from its losers.
+        let fd = sourceSocket(source, socket.SOCK_DGRAM);
+        if (!fd || !fd.connect({ address: source.address, port: source.port }) || fd.send(packet) != length(packet)) {
+            if (fd) fd.close(); q.failed[index] = true; return;
+        }
+        push(streams, { fd, query: q, source: index, datagram: true, closed: false });
         return;
     }
     let fd = sourceSocket(source, socket.SOCK_STREAM);
@@ -126,13 +168,17 @@ function submit(packet, address, client) {
         q.next = now() + 350;
     }
 }
-function answer(index, packet) {
+function answer(index, packet, expected) {
     if (length(packet) < 12 || !(ord(packet, 2) & 128)) return;
     let q = pending[word(packet, 0)], parsed = question(packet);
-    if (!q || !q.sent[index] || q.failed[index] || !parsed || parsed.key != q.parsed.key || (ord(packet, 2) & 120) != (ord(q.packet, 2) & 120)) return;
+    if (!q || (expected && q != expected) || !q.sent[index] || q.failed[index] || !parsed || parsed.key != q.parsed.key || (ord(packet, 2) & 120) != (ord(q.packet, 2) & 120) || !validPacket(packet, parsed)) return;
     let code = ord(packet, 3) & 15;
-    if (code != 0 && code != 3) {
-        if (!q.fallback || code==5) q.fallback=packet;
+    let negative = code == 3 || (code == 0 && word(packet, 6) == 0);
+    if (code != 0 || negative) {
+        if (!q.fallback || negative || (!q.negativeUntil && code==5)) q.fallback=packet;
+        // NXDOMAIN/NODATA are valid DNS results. Briefly prefer a contradicting
+        // answer, but do not wait four seconds for an unresponsive resolver.
+        if (negative && !q.negativeUntil) q.negativeUntil = now() + NEGATIVE_WAIT;
         q.failed[index] = true;
         if (code==2) sources[index].failures++; else sources[index].failures=0;
         if (config.mode == 'balanced') next(q);
@@ -146,9 +192,8 @@ function answer(index, packet) {
 while (true) {
     streams = filter(streams, s => !s.closed && !s.query.done);
     let watched = [[udp, socket.POLLIN, 'udp'], [tcp, socket.POLLIN, 'accept']];
-    for (let index, source in sources) if (source.fd) push(watched, [source.fd, socket.POLLIN, 'source', index]);
     for (let client in values(clients)) push(watched, [client.fd, socket.POLLIN | (length(client.output) ? socket.POLLOUT : 0), 'client', client]);
-    for (let stream in streams) push(watched, [stream.fd, socket.POLLIN | ((!stream.connected || length(stream.output)) ? socket.POLLOUT : 0), 'stream', stream]);
+    for (let stream in streams) push(watched, [stream.fd, socket.POLLIN | (!stream.datagram && (!stream.connected || length(stream.output)) ? socket.POLLOUT : 0), stream.datagram ? 'datagram' : 'stream', stream]);
     let events = socket.poll(100, ...watched);
     if (events == null) continue;
     for (let event in events) {
@@ -159,9 +204,15 @@ while (true) {
             let address = {}, packet = fd.recv(4097, 0, address);
             if (packet != null) submit(packet, address, null);
         }
-        else if (kind == 'source') {
+        else if (kind == 'datagram') {
+            if (state.closed || state.query.done) continue;
             let packet = fd.recv(65535);
-            if (packet != null) answer(state, packet);
+            if (packet != null) answer(state.source, packet, state.query);
+            if (state.query.failed[state.source]) closeStream(state);
+            if (!state.query.done && (event[1] & (socket.POLLERR | socket.POLLHUP | socket.POLLNVAL))) {
+                state.query.failed[state.source] = true; sources[state.source].failures++; closeStream(state);
+                if (config.mode == 'balanced') next(state.query);
+            }
         }
         else if (kind == 'accept') {
             let peer = fd.accept({}, socket.SOCK_NONBLOCK);
@@ -210,7 +261,7 @@ while (true) {
                 else if (data != null) state.input += data;
                 if (length(state.input) > 65537) failed = true;
                 if (!failed && length(state.input) >= 2 && length(state.input) >= word(state.input, 0) + 2) {
-                    answer(state.source, substr(state.input, 2, word(state.input, 0))); closeStream(state);
+                    answer(state.source, substr(state.input, 2, word(state.input, 0)), state.query); closeStream(state);
                 }
             }
             if (!state.query.done && (failed || (event[1] & (socket.POLLERR | socket.POLLHUP | socket.POLLNVAL)))) {
@@ -223,7 +274,7 @@ while (true) {
     for (let id in keys(pending)) {
         let q = pending[id];
         if (!q) continue;
-        if (stamp >= q.deadline || length(q.failed) == length(sources)) finish(q, q.fallback || failure(q.packet, q.parsed));
+        if (stamp >= q.deadline || (q.negativeUntil && stamp >= q.negativeUntil) || length(q.failed) == length(sources)) finish(q, q.fallback || failure(q.packet, q.parsed));
         else if (config.mode == 'balanced' && stamp >= q.next) next(q);
     }
     for (let client in values(clients)) if (stamp >= client.deadline) closeClient(client);

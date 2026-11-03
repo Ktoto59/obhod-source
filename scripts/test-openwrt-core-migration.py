@@ -43,6 +43,10 @@ case "$*" in *--simulate*) exit 0;; *add*) echo 1.13.21-obhod.4 > /tmp/version;;
         (lab/'etc/config/sing-box').write_text("config sing-box 'main'\n option enabled '0'\n")
         (lab/'etc/config/obhod').write_text("config obhod 'main'\n option enabled '1'\n")
         shutil.copyfile(ROOT/'openwrt/obhod/files/etc/init.d/obhod', lab/'etc/init.d/obhod')
+        shutil.copyfile(ROOT/'openwrt/obhod/files/usr/share/obhod/version', lab/'usr/share/obhod/version')
+        ui = lab/'www/luci-static/resources/obhod'
+        ui.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT/'openwrt/luci-app-obhod/htdocs/luci-static/resources/obhod/core.js', ui/'core.js')
         (lab/'var/run/obhod/controller-secret').write_text('11111111-2222-4333-8444-555555555555')
         state = lab/'etc/obhod/settings.json'
         state.write_bytes((ROOT/'.tmp/openwrt-legacy-settings.json').read_bytes())
@@ -72,6 +76,10 @@ case "$*" in *--simulate*) exit 0;; *add*) echo 1.13.21-obhod.4 > /tmp/version;;
             prior = calls.read_bytes()
             run('/usr/libexec/obhod/control', 'prepare')
             assert calls.read_bytes() == prior, 'A compatible installed core is never reinstalled'
+        (lab/'tmp/version').write_text('1.13.21-obhod.3')
+        (ui/'core.js').unlink()
+        run('/usr/libexec/obhod/control', 'prepare')
+        assert (lab/'var/run/obhod/prepared.sha').exists(), 'Backend-only installations do not require the optional LuCI package'
         (lab/'tmp/version').write_text('1.13.21-obhod.3')
         (lab/'tmp/core.apk').write_bytes(package+b'tampered'); prior = calls.read_bytes()
         run('/usr/libexec/obhod/core-upgrade-required', ok=False)
