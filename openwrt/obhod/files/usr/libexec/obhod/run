@@ -42,7 +42,7 @@ while [ "$attempt" -lt 10 ]; do
 done
 [ "$attempt" -lt 10 ] || exit 1
 if [ "$(jsonfilter -i /etc/obhod/settings.json -e '@.options.manageDns')" = true ]; then
-	/usr/libexec/obhod/dns apply || {
+	/usr/libexec/obhod/dns apply "$$" || {
 		printf '%s\n' 'Не удалось настроить DNS. Проверьте dnsmasq и сохранённую копию DNS.' > "$RUN/error"
 		exit 1
 	}

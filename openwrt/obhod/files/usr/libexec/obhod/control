@@ -86,7 +86,7 @@ stop_failed() {
 	# procd can reject stop while the previous, ready worker is still alive.
 	# Return its DNS dependency to the running configuration. Do not point DNS
 	# at a listener which actually exited, or restart/replace the core here.
-	if [ "$dns_was_managed" = 1 ] && [ -f "$RUN/ready" ] && operation alive "$pid"; then
+	if [ "$manage_dns" = 1 ] && [ -f "$RUN/ready" ] && operation alive "$pid"; then
 		/usr/libexec/obhod/dns apply || { error 'Остановка не завершена; не удалось повторно применить DNS. Служба работает, проверьте DNS и повторите остановку.'; return 1; }
 		# cleanup removes ready before restoring DNS. If it won the race with
 		# apply, remove our newly installed dependency as well. A ready respawn
@@ -101,18 +101,23 @@ stop_failed() {
 stop_and_wait() {
 	# Do not turn off the listener while dnsmasq still depends on it. A failed
 	# transaction must leave the running service available for a safe retry.
-	dns_was_managed=0
-	if [ -f /etc/obhod/dns-backup.json ] && [ "$(jsonfilter -i "$STATE" -e '@.options.manageDns' 2>/dev/null)" = true ]; then dns_was_managed=1; fi
+	# A starting apply may publish its first backup while restore waits on FD 8.
+	# Use the configured policy for failed-stop recovery, not an unlocked stat.
+	manage_dns=0
+	[ "$(jsonfilter -i "$STATE" -e '@.options.manageDns' 2>/dev/null)" != true ] || manage_dns=1
 	/usr/libexec/obhod/dns restore || { error 'Не удалось восстановить DNS; служба оставлена работающей. Повторите остановку после проверки DNS.'; return 1; }
 	pid=$(cat "$RUN/run-pid" 2>/dev/null)
 	[ -n "$pid" ] || pid=$(ubus call service list '{"name":"obhod"}' 2>/dev/null | jsonfilter -e '@.obhod.instances.main.pid')
 	/etc/init.d/obhod stop >/dev/null 2>&1 || { stop_failed; return 1; }
-	case "$pid" in ''|*[!0-9]*) return 0 ;; esac
+	case "$pid" in ''|*[!0-9]*) pid= ;; esac
 	count=0
-	while kill -0 "$pid" 2>/dev/null; do
+	while [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; do
 		[ "$count" -lt 20 ] || { stop_failed; return 1; }
 		sleep 1; count=$((count + 1))
 	done
+	# SIGKILL can leave a DNS child alive after the run PID exits. Drain its
+	# transaction under FD 8 before reporting stop success or clearing enabled.
+	/usr/libexec/obhod/dns restore || { error 'Служба остановлена, но не удалось окончательно восстановить DNS. Проверьте DNS и повторите остановку.'; return 1; }
 }
 
 recover() {

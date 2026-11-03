@@ -5,12 +5,23 @@ umask 077
 set -f
 . /usr/share/libubox/jshn.sh
 BACKUP=/etc/obhod/dns-backup.json
-[ "$1" != restore ] || [ -f "$BACKUP" ] || exit 0
 mkdir -p /var/run/obhod /var/lock
 # The shell retains the open file description, including across helper exits.
 # A killed worker cannot leave a stale mkdir lock behind.
 exec 8>/var/lock/obhod-dns.guard || exit 1
 ucode -e 'import { fdopen } from "fs"; let lease = fdopen(8, "a"); if (!lease || !lease.lock("x")) exit(1);' || exit 1
+# An in-flight apply may own the lock before publishing its backup.
+[ "$1" != restore ] || [ -f "$BACKUP" ] || exit 0
+# A service apply queued behind restore must not outlive its run worker. The
+# final restore in control drains any apply which passed this check before exit.
+if [ "$1" = apply ] && [ -n "${2:-}" ]; then
+	case "$2" in *[!0-9]*) exit 1;; esac
+	if [ "$(cat /var/run/obhod/run-pid 2>/dev/null)" != "$2" ] ||
+		! ucode /usr/libexec/obhod/operation.uc alive "$2"; then
+		printf '%s\n' 'DNS apply отменён: запустивший его worker уже завершился или заменён.' >&2
+		exit 1
+	fi
+fi
 WORK=$(mktemp -d /var/run/obhod/dns.XXXXXX) || exit 1
 staged=
 trap 'rm -f "$staged" "$WORK/original" "$WORK/obhod_dns_work" "$WORK/.uci/obhod_dns_work"; rmdir "$WORK/.uci" "$WORK" 2>/dev/null' EXIT

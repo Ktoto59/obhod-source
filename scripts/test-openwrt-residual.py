@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Residual audit regressions, real UCI/ucode in the existing disposable lab."""
 import importlib.util
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -54,6 +55,216 @@ class Residual(audit.Audit):
         fd = self.barrier('tmp/commit-runner', 'commit', 'exec ucode /usr/libexec/obhod/dns-commit-real.uc "$@"\n')
         self.write('usr/libexec/obhod/dns-commit.uc', "exit(system(['/tmp/commit-runner', ...ARGV]) == 0 ? 0 : 1);\n")
         return fd
+
+    def spawn(self, *args):
+        p = subprocess.Popen(['chroot', str(self.lab), *args], start_new_session=True,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        def cleanup():
+            try: os.killpg(p.pid, signal.SIGKILL)
+            except ProcessLookupError: pass
+            p.communicate(timeout=5)
+        self.addCleanup(cleanup)
+        return p
+
+    def before_backup_barrier(self):
+        # Both instrumentation points surround real production flock acquisition.
+        path = self.lab/'usr/libexec/obhod/dns'
+        source = path.read_text()
+        needle = "ucode -e 'import { fdopen }"
+        self.assertIn(needle, source)
+        source = source.replace(needle, '[ "$1" != restore ] || echo ready > /tmp/restore-lock-ready\n' + needle, 1)
+        needle = 'WORK=$(mktemp -d'
+        self.assertIn(needle, source)
+        source = source.replace(needle, '[ "$1" != apply ] || /tmp/before-backup\n' + needle, 1)
+        path.write_text(source)
+        return self.barrier('tmp/before-backup', 'backup', 'exit 0\n')
+
+    def test_restore_waits_for_apply_before_backup_exists(self):
+        self.dns_fixture(); gate = self.before_backup_barrier()
+        apply = self.spawn('/usr/libexec/obhod/dns', 'apply')
+        self.wait_ready('backup', apply)
+        self.assertFalse((self.lab/'etc/obhod/dns-backup.json').exists())
+        with (self.lab/'var/lock/obhod-dns.guard').open('a') as guard:
+            with self.assertRaises(BlockingIOError):
+                fcntl.flock(guard, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        restore = self.spawn('/usr/libexec/obhod/dns', 'restore')
+        try:
+            self.wait_ready('restore-lock', restore)
+            self.assertIsNone(restore.poll())
+        finally:
+            os.write(gate, b'go\n')
+        out, err = apply.communicate(timeout=5)
+        self.assertEqual(apply.returncode, 0, (out,err))
+        out, err = restore.communicate(timeout=5)
+        self.assertEqual(restore.returncode, 0, (out,err))
+        self.assertEqual(self.run_in('/sbin/uci','get','dhcp.main.server').stdout.strip(), '9.9.9.9')
+        self.assertFalse((self.lab/'etc/obhod/dns-backup.json').exists())
+        # Drop only test instrumentation, then exercise no-op and repeated calls.
+        self.write('usr/libexec/obhod/dns', (audit.BASE/'usr/libexec/obhod/dns').read_text())
+        self.dns('restore'); self.dns('apply'); self.dns('apply'); self.dns('restore'); self.dns('restore')
+        self.assertEqual((self.lab/'tmp/dns-restarts').read_text().splitlines(), ['restart']*4)
+
+    def test_restore_waiting_on_dns_lock_recovers_after_sigkill(self):
+        self.dns_fixture(); self.before_backup_barrier()
+        apply = self.spawn('/usr/libexec/obhod/dns', 'apply')
+        self.wait_ready('backup', apply)
+        restore = self.spawn('/usr/libexec/obhod/dns', 'restore')
+        self.wait_ready('restore-lock', restore)
+        os.killpg(apply.pid, signal.SIGKILL); apply.communicate(timeout=5)
+        out, err = restore.communicate(timeout=5)
+        self.assertEqual(restore.returncode, 0, (out,err))
+        self.assertFalse((self.lab/'etc/obhod/dns-backup.json').exists())
+        self.assertFalse((self.lab/'tmp/dns-restarts').exists())
+        self.write('usr/libexec/obhod/dns', (audit.BASE/'usr/libexec/obhod/dns').read_text())
+        self.dns('apply'); self.dns('restore')
+
+    def stopping_startup(self, signal_name='TERM'):
+        self.dns_fixture()
+        self.write('etc/obhod/settings.json', '{"options":{"manageDns":true}}')
+        self.run_in('/sbin/uci','set','obhod.main.enabled=1')
+        self.run_in('/sbin/uci','commit','obhod')
+        self.write('proc/net/tcp', ' 0: 0100007F:041D 00000000:0000 0A \n')
+        self.barrier('usr/bin/sing-box', 'core', 'exit 0\n')
+        core = self.lab/'usr/bin/sing-box'
+        core.write_text(core.read_text().replace('#!/bin/sh\n', '#!/bin/sh\ntrap "exit 0" TERM INT\necho $$ > /tmp/core-pid\n', 1))
+        self.write('usr/libexec/obhod/monitor', '#!/bin/sh\nexit 0\n')
+        before_run = self.barrier('tmp/before-run-dns', 'run-dns', 'exit 0\n')
+        run = self.lab/'usr/libexec/obhod/run'
+        needle = 'if [ "$(jsonfilter -i /etc/obhod/settings.json'
+        self.assertIn(needle, run.read_text())
+        run.write_text(run.read_text().replace(needle, '/tmp/before-run-dns\n' + needle, 1))
+        dns_gate = self.before_backup_barrier()
+        # Execute real rc.common, procd.sh and stop_service. Only the ubus
+        # transport/process signal is simulated; the delete barrier follows
+        # stop_service exactly as on OpenWrt.
+        delete = self.barrier('tmp/procd-delete', 'delete', f'kill -{signal_name} "$(cat /var/run/obhod/run-pid)"\necho ready > /tmp/signal-ready\n')
+        self.write('bin/ubus', '''#!/bin/sh
+case "$1 $2 $3" in
+ 'call service delete') /tmp/procd-delete || exit 1;;
+esac
+echo '{}'
+''')
+        (self.lab/'etc/init.d/obhod').chmod(0o755)
+        worker = self.spawn('/usr/libexec/obhod/run')
+        self.wait_ready('run-dns', worker)
+        stop = self.spawn('/usr/libexec/obhod/control','stop')
+        self.wait_ready('delete', stop)
+        self.assertFalse((self.lab/'etc/obhod/dns-backup.json').exists())
+        os.write(before_run,b'go\n')
+        self.wait_ready('backup', worker)
+        (self.lab/'tmp/restore-lock-ready').unlink(missing_ok=True)
+        os.write(delete,b'go\n')
+        self.wait_ready('signal', stop)
+        return worker, stop, dns_gate
+
+    def wait_stop(self, worker, stop):
+        deadline = time.monotonic()+7
+        while stop.poll() is None:
+            worker.poll()  # Reap: kill -0 must not keep seeing a zombie worker.
+            self.assertLess(time.monotonic(), deadline, 'stop did not finish')
+            time.sleep(.005)
+        out, err = stop.communicate(timeout=5)
+        self.assertEqual(stop.returncode, 0, (out,err))
+        self.assertIsNotNone(worker.poll())
+        self.assertEqual(self.run_in('/sbin/uci','get','dhcp.main.server').stdout.strip(), '9.9.9.9')
+        self.assertEqual(self.run_in('/sbin/uci','get','obhod.main.enabled').stdout.strip(), '0')
+        self.assertFalse((self.lab/'etc/obhod/dns-backup.json').exists())
+
+    def test_control_stop_while_run_is_entering_dns_apply(self):
+        worker, stop, dns_gate = self.stopping_startup()
+        os.write(dns_gate,b'go\n')
+        self.wait_stop(worker, stop)
+        self.assertFalse((self.lab/'var/run/obhod/ready').exists())
+
+    def test_control_stop_waits_for_dns_child_of_killed_run(self):
+        worker, stop, dns_gate = self.stopping_startup('KILL')
+        worker.wait(timeout=5)
+        # The DNS child still owns FD 8, even though procd's worker PID exited.
+        # A successful stop must not leave that child free to install DNS later.
+        deadline = time.monotonic()+5
+        while stop.poll() is None and not (self.lab/'tmp/restore-lock-ready').exists():
+            self.assertLess(time.monotonic(),deadline); time.sleep(.005)
+        try:
+            self.assertIsNone(stop.poll(), 'stop completed before its live DNS child')
+        finally:
+            os.write(dns_gate,b'go\n')
+        self.wait_stop(worker, stop)
+
+    def test_queued_service_apply_rejects_dead_or_replaced_worker(self):
+        self.dns_fixture()
+        gate = self.barrier('tmp/queued-apply', 'queued', 'exit 0\n')
+        path = self.lab/'usr/libexec/obhod/dns'
+        needle = "ucode -e 'import { fdopen }"
+        path.write_text(path.read_text().replace(needle, '[ "$1" != apply ] || /tmp/queued-apply\n' + needle, 1))
+        self.barrier('tmp/owner', 'owner', 'exit 0\n')
+        owner = self.spawn('/bin/sh','-c','echo $$ > /var/run/obhod/run-pid; exec /tmp/owner')
+        self.wait_ready('owner', owner)
+        apply = self.spawn('/usr/libexec/obhod/dns','apply',str(owner.pid))
+        self.wait_ready('queued', apply)
+        # Another ready worker replaced this one while its child waited for FD 8.
+        self.write('var/run/obhod/run-pid', str(os.getpid()))
+        self.dns('restore')
+        os.write(gate,b'go\n')
+        out, err = apply.communicate(timeout=5)
+        self.assertNotEqual(apply.returncode, 0, (out,err))
+        self.assertFalse((self.lab/'etc/obhod/dns-backup.json').exists())
+        (self.lab/'tmp/queued-ready').unlink()
+        self.write('var/run/obhod/run-pid', str(owner.pid))
+        apply = self.spawn('/usr/libexec/obhod/dns','apply',str(owner.pid))
+        self.wait_ready('queued', apply)
+        os.killpg(owner.pid,signal.SIGKILL); owner.communicate(timeout=5)
+        # Simulate final stop restore overtaking a child queued before flock.
+        self.dns('restore')
+        os.write(gate,b'go\n')
+        out, err = apply.communicate(timeout=5)
+        self.assertNotEqual(apply.returncode, 0, (out,err))
+        self.assertFalse((self.lab/'etc/obhod/dns-backup.json').exists())
+        self.assertEqual(self.run_in('/sbin/uci','get','dhcp.main.server').stdout.strip(), '9.9.9.9')
+
+    def test_final_restore_failure_preserves_enabled_and_can_retry(self):
+        worker, stop, gate = self.stopping_startup('KILL')
+        worker.wait(timeout=5)
+        self.write('etc/init.d/dnsmasq', '''#!/bin/sh
+[ "$(uci -q get dhcp.main.server)" = '127.0.0.1#1053' ]
+''')
+        os.write(gate,b'go\n')
+        out, err = stop.communicate(timeout=7)
+        self.assertNotEqual(stop.returncode, 0, (out,err))
+        self.assertEqual(self.run_in('/sbin/uci','get','obhod.main.enabled').stdout.strip(), '1')
+        self.assertEqual(self.run_in('/sbin/uci','get','dhcp.main.server').stdout.strip(), '9.9.9.9')
+        state = json.loads((self.lab/'etc/obhod/dns-backup.json').read_text())
+        self.assertEqual(state['phase'], 'restoring')
+        self.write('etc/init.d/dnsmasq', '#!/bin/sh\nexit 0\n')
+        self.write('etc/init.d/obhod', '#!/bin/sh\nexit 0\n')
+        result = self.run_in('/usr/libexec/obhod/control','stop')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.lab/'etc/obhod/dns-backup.json').exists())
+        self.assertEqual(self.run_in('/sbin/uci','get','obhod.main.enabled').stdout.strip(), '0')
+
+    def test_failed_stop_after_waiting_for_first_backup_restores_live_dns(self):
+        self.dns_fixture()
+        self.write('etc/obhod/settings.json', '{"options":{"manageDns":true}}')
+        self.write('var/run/obhod/run-pid', str(os.getpid()))
+        self.run_in('/sbin/uci','set','obhod.main.enabled=1')
+        self.run_in('/sbin/uci','commit','obhod')
+        gate = self.before_backup_barrier()
+        failed = self.barrier('etc/init.d/obhod','failed-stop','exit 1\n')
+        apply = self.spawn('/usr/libexec/obhod/dns','apply')
+        self.wait_ready('backup',apply)
+        stop = self.spawn('/usr/libexec/obhod/control','stop')
+        self.wait_ready('restore-lock',stop)
+        os.write(gate,b'go\n'); apply.communicate(timeout=5)
+        self.assertEqual(apply.returncode,0)
+        self.wait_ready('failed-stop',stop)
+        self.write('var/run/obhod/ready','')
+        self.write('usr/libexec/obhod/dns',(audit.BASE/'usr/libexec/obhod/dns').read_text())
+        os.write(failed,b'go\n')
+        out,err = stop.communicate(timeout=5)
+        self.assertNotEqual(stop.returncode,0,(out,err))
+        self.assertEqual(self.run_in('/sbin/uci','get','dhcp.main.server').stdout.strip(), '127.0.0.1#1053')
+        self.assertEqual(self.run_in('/sbin/uci','get','obhod.main.enabled').stdout.strip(), '1')
+        state = json.loads((self.lab/'etc/obhod/dns-backup.json').read_text())
+        self.assertEqual(state['servers'], ['9.9.9.9'])
 
     def test_rejected_dns_server_commit_allows_retry(self):
         for field in ['server', 'noresolv']:
