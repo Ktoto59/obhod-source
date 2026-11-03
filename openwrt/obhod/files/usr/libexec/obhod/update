@@ -45,6 +45,9 @@ operation() { ucode "$work/operation.uc" "$@"; }
 token=${3:-}
 exec 9>"$LOCK/lease" || exit 1
 operation claim update "$token" "$$" || exit 1
+# Cleanup removes the worker snapshot. Keep its matching release implementation
+# in memory until cleanup and rpcd reload have both finished.
+release_source=$(cat "$work/operation.uc")
 exec > "$RUN/update-log" 2>&1
 result=error
 message='Обновление прервано. Профиль сохранён; проверьте состояние пакетов.'
@@ -52,16 +55,23 @@ was_running=0
 stopped=0
 reload=0
 finish() {
+    set +e
     if [ "$stopped" = 1 ] && [ "$was_running" = 1 ]; then
         if ! /usr/libexec/obhod/control start; then result=error; message='Пакеты обработаны, но служба не запустилась. Профиль сохранён; проверьте состояние Обхода.'; fi
     fi
-    operation release update "$token" "$$" "$result" "$message"
     cd /
-    rm -rf "$work"
+    if ! rm -rf "$work"; then result=error; message='Не удалось очистить временные файлы обновления. Проверьте /tmp и повторите операцию.'; fi
     if [ "$reload" = 1 ]; then
-        rm -f "$RUN/rpcd-reload-needed"
-        /etc/init.d/rpcd reload >/dev/null 2>&1 || true
+        # No operation-manager guard is held here. Reload can query/recover
+        # operation state synchronously; FD 9 still protects this worker.
+        touch "$RUN/rpcd-reload-needed"
+        if /etc/init.d/rpcd reload >/dev/null 2>&1; then
+            rm -f "$RUN/rpcd-reload-needed" || { result=error; message='Не удалось очистить признак перезагрузки rpcd.'; }
+        else
+            result=error; message='Пакеты обработаны, но rpcd не перезагрузился. Повторите перезагрузку rpcd.'
+        fi
     fi
+    ucode -e "$release_source" release update "$token" "$$" "$result" "$message"
 }
 trap finish EXIT
 trap 'exit 130' INT TERM

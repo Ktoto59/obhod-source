@@ -30,8 +30,26 @@ let explicit = ARGV[3] == 'diagnose', active = explicit || ARGV[3] == 'active', 
 let history = proxy?.history || [], sample = length(history) ? history[length(history) - 1] : null;
 if (!active) delay = sample?.delay;
 let valid = type(delay) == 'int' && delay > 0 && delay < 60000;
+// Clash serializes URLTestHistory.Time as RFC3339, including fractional seconds
+// and local UTC offsets. Interpret the sample independently of the router's TZ.
+function historyTime(value) {
+    let parts = match(value || '', /^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})(\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$/);
+    if (!parts) return null;
+    let stamp = timegm({ year: int(parts[1]), mon: int(parts[2]), mday: int(parts[3]),
+        hour: int(parts[4]), min: int(parts[5]), sec: int(parts[6]) });
+    if (parts[8] != 'Z') {
+        let offset = int(substr(parts[8], 1, 2)) * 3600 + int(substr(parts[8], 4, 2)) * 60;
+        stamp -= substr(parts[8], 0, 1) == '+' ? offset : -offset;
+    }
+    return stamp > 0 ? stamp : null;
+}
+let receivedAt = time(), measuredAt = active ? receivedAt : historyTime(sample?.time);
+let interval = match(routing.failoverInterval || '15s', /^([0-9]+)(s|m|h)$/);
+let maxAge = active ? 90 : interval ? int(interval[1]) * (interval[2] == 'h' ? 3600 : interval[2] == 'm' ? 60 : 1) : 15;
 // An absent urltest sample means unknown latency, not a failed connection.
 // Only explicit diagnosis or an actual failed urltest sample reports failure.
 let ok = active ? valid : !!proxy && (!sample || valid);
 printf('%J\n', { name: selected?.name || '', tag, delay: valid ? delay : null, ok,
-    checkedAt: time(), delayTime: active ? null : sample?.time, diagnostic: explicit });
+    checkedAt: measuredAt, receivedAt, diagnosedAt: explicit ? receivedAt : null,
+    known: active || (sample != null && measuredAt != null), maxAge,
+    delayTime: active ? null : sample?.time, diagnostic: explicit });

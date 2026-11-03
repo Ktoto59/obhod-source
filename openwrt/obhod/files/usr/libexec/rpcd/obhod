@@ -80,6 +80,10 @@ case "$2" in
 		json_add_string routeName "$(jsonfilter -i "$RUN/telemetry.json" -e '@.name' 2>/dev/null)"
 		json_add_string routeDelay "$(jsonfilter -i "$RUN/telemetry.json" -e '@.delay' 2>/dev/null)"
 		json_add_string routeCheckedAt "$(jsonfilter -i "$RUN/telemetry.json" -e '@.checkedAt' 2>/dev/null)"
+		json_add_string routeReceivedAt "$(jsonfilter -i "$RUN/telemetry.json" -e '@.receivedAt' 2>/dev/null)"
+		json_add_string routeDiagnosedAt "$(jsonfilter -i "$RUN/telemetry.json" -e '@.diagnosedAt' 2>/dev/null)"
+		json_add_string routeMaxAge "$(jsonfilter -i "$RUN/telemetry.json" -e '@.maxAge' 2>/dev/null)"
+		json_add_boolean routeKnown "$(jsonfilter -i "$RUN/telemetry.json" -e '@.known' 2>/dev/null | grep -qx true && echo 1 || echo 0)"
 		json_add_boolean routeOk "$(jsonfilter -i "$RUN/telemetry.json" -e '@.ok' 2>/dev/null | grep -qx true && echo 1 || echo 0)"
 		json_dump
 		;;

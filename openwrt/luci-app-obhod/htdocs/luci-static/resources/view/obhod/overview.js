@@ -345,12 +345,12 @@ return view.extend({
     this.serviceButton.disabled = !!(value.coreBusy || value.updateBusy || value.jobBusy || (!value.running && !value.enabled && (!value.configured || !value.version)));
     this.serviceButton.title = !value.configured ? 'Сначала сохраните подключение.' : 'Включение использует сохранённые настройки.';
     this.statusDetail.textContent = value.error || (value.jobBusy ? value.jobMessage : '') || value.version || 'Сначала установите ядро протоколов';
-    var fresh = Number(value.routeCheckedAt) > 0 && Date.now()/1000 - Number(value.routeCheckedAt) < 90;
+    var telemetry = this.routeTelemetry(value, Date.now()/1000);
     this.liveRoute.textContent = !value.running ? 'Маршрут неактивен' : value.routeName || 'Проверяем маршрут…';
-    this.liveDelay.textContent = value.running && fresh ? (value.routeOk ? (value.routeDelay !== '' ? value.routeDelay + ' мс' : 'нет замера') : 'нет ответа') : '';
+    this.liveDelay.textContent = value.running ? telemetry.label : '';
     this.overviewLiveRoute.textContent = this.liveRoute.textContent;
     this.overviewLiveDelay.textContent = this.liveDelay.textContent;
-    this.routeDetail.title = fresh ? 'Телеметрия ядра: ' + new Date(Number(value.routeCheckedAt)*1000).toLocaleTimeString('ru-RU') : 'Ожидаем телеметрию ядра. Активная HTTPS-проверка доступна в диагностике.';
+    this.routeDetail.title = telemetry.title;
     this.coreState.textContent = (value.coreFlavor || (value.version ? 'Своё ядро sing-box' : 'Ядро не установлено')) + (value.version?' · '+value.version.replace(/^sing-box version /,''):'')
       + (value.coreMessage ? ' · ' + value.coreMessage : '');
     var busy=!!(value.coreBusy || value.updateBusy || value.jobBusy);
@@ -367,6 +367,19 @@ return view.extend({
     this.updateControls();
     this.diagnosticButton.disabled = !!(value.coreBusy || value.updateBusy || value.jobBusy);
     this.diagnosticMessage.textContent = value.jobMessage || 'Проверка использует сохранённые настройки.';
+  },
+
+  routeTelemetry: function(value, now) {
+    var measured = Number(value.routeCheckedAt), received = Number(value.routeReceivedAt);
+    var age = now - measured, readAge = now - received;
+    var known = value.routeKnown === true && measured > 0;
+    var fresh = known && age >= -5 && age <= Number(value.routeMaxAge) && received > 0 && readAge >= -5 && readAge < 90;
+    var label = !known ? 'нет замера' : !fresh ? 'замер устарел' : value.routeOk ? (value.routeDelay !== '' ? value.routeDelay + ' мс' : 'нет замера') : 'нет ответа';
+    var title = known ? 'Замер: ' + new Date(measured*1000).toLocaleTimeString('ru-RU') : 'Ожидаем замер ядра.';
+    if (received > 0) title += ' Получено: ' + new Date(received*1000).toLocaleTimeString('ru-RU') + '.';
+    if (Number(value.routeDiagnosedAt) > 0) title += ' Явная диагностика.';
+    if (!fresh) title += ' Активная HTTPS-проверка доступна в диагностике.';
+    return { label: label, title: title };
   },
 
   updateControls: function() {

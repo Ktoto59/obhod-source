@@ -18,6 +18,18 @@ if (!target.lock('x') || target.write(replacement) != length(replacement)) {
 }
 // Older ucode returns null from flush even on success; error() is authoritative.
 target.flush();
-if (target.error() || !chown(temporary, before.uid, before.gid) || !chmod(temporary, before.mode & 0777) || !rename(temporary, path)) {
+if (target.error() || !chown(temporary, before.uid, before.gid) || !chmod(temporary, before.mode & 0777)) {
+    unlink(temporary); die('Cannot stage dhcp configuration');
+}
+// Publish intent under the same UCI flock, after compare, before rename. A
+// prepared backup therefore proves that Obhod never attempted this replacement.
+let backup = '/etc/obhod/dns-backup.json', state = json(readfile(backup));
+if (ARGV[3] != 'apply' && ARGV[3] != 'restore') die('Invalid DNS transaction');
+state.phase = ARGV[3] == 'apply' ? 'applying' : 'restoring';
+let journal = open(backup + '.tmp', 'w', 0600), data = sprintf('%J\n', state);
+if (!journal || journal.write(data) != length(data)) die('Cannot stage DNS journal');
+journal.flush();
+if (journal.error() || !rename(backup + '.tmp', backup)) die('Cannot save DNS journal');
+if (!rename(temporary, path)) {
     unlink(temporary); die('Cannot commit dhcp configuration');
 }
