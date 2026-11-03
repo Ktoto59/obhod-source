@@ -117,8 +117,8 @@ def main(binary):
         children.append(subprocess.Popen(['ip', 'netns', 'exec', server, sys.executable, script, '--serve']))
         def request(protocol, address, name=None, kind='A'):
             return run('ip', 'netns', 'exec', client, sys.executable, script, '--probe', protocol, address, name or '', kind)
-        def queued():
-            rules = json.loads(run('nft', '-j', 'list', 'chain', 'inet', 'sing-box', 'prerouting_prematch'))['nftables']
+        def queued(chain='prerouting_prematch'):
+            rules = json.loads(run('nft', '-j', 'list', 'chain', 'inet', 'sing-box', chain))['nftables']
             return sum(e['counter']['packets'] for r in rules if 'rule' in r for e in r['rule']['expr'] if 'counter' in e and any('queue' in item for item in r['rule']['expr']))
         def wait_core(core, log):
             deadline = time.monotonic() + 15
@@ -146,7 +146,7 @@ def main(binary):
                 local = ['198.18.0.0/15', '203.0.113.0/24'] + (['2001:2::/48', '2001:db8:113::/64'] if ipv6 else [])
                 config = {'log': {'level': 'debug'}, 'inbounds': [{'type': 'tun', 'tag': 'tun-in', 'interface_name': 'obhod-tun',
                     'address': ['172.19.0.1/30'] + (['fdfe:dcba:9876::1/126'] if ipv6 else []), 'stack': 'system', 'auto_route': True, 'auto_redirect': True,
-                    'strict_route': False, 'include_interface': ['lan'], 'route_address_set': ['selected', 'remote', 'binary']}],
+                    'strict_route': False, 'include_interface': ['lan', 'lo'], 'route_address_set': ['selected', 'remote', 'binary']}],
                     'outbounds': [{'type': 'direct', 'tag': 'direct'}, {'type': 'direct', 'tag': 'proxy'}],
                     'dns': {'servers': [{'type': 'udp', 'tag': 'real', 'server': '192.0.2.2'}, {'type': 'fakeip', 'tag': 'fake', 'inet4_range': '198.18.0.0/15', **({'inet6_range': '2001:2::/48'} if ipv6 else {})}],
                         'rules': [{'domain': ['selected.example'], 'query_type': ['A', 'AAAA'] if ipv6 else ['A'], 'server': 'fake'}], 'final': 'real'},
@@ -161,6 +161,15 @@ def main(binary):
                 log = open(temp/'core.log', 'w+')
                 core = subprocess.Popen([binary, 'run', '-c', str(file)], stdout=log, stderr=log); children.append(core)
                 wait_core(core, log)
+                output = queued('output_prematch')
+                for protocol in ['tcp', 'udp']:
+                    assert probe(protocol, '198.51.100.2') == '192.0.2.1'
+                assert queued('output_prematch') == output, 'Ordinary router output never enters NFQUEUE'
+                for protocol in ['tcp', 'udp']:
+                    router_fake = probe(protocol, '8.8.8.8', 'selected.example')
+                    assert ipaddress.ip_address(router_fake) in ipaddress.ip_network('198.18.0.0/15')
+                    assert probe(protocol, router_fake) == '192.0.2.1'
+                assert queued('output_prematch') > output, 'Router tools can use selected FakeIP through the native output chain'
                 before = queued()
                 for protocol in ['tcp', 'udp']:
                     assert request(protocol, '198.51.100.2') == '10.10.0.2'
@@ -219,7 +228,7 @@ def main(binary):
                     core.terminate(); core.wait(timeout=10); log.close()
                     print('PASS: invalid update retains last good rules; cached JSON/SRS and FakeIP restore without the list server', flush=True)
                 remote.write_text(json.dumps({'version': 3, 'rules': [{'ip_cidr': ['198.51.100.130/32']}]}))
-                print(f'PASS IPv6={ipv6}: first-packet kernel bypass, TCP/UDP, FakeIP/DNS, JSON/SRS, live update and stop cleanup', flush=True)
+                print(f'PASS IPv6={ipv6}: LAN/router output first-packet kernel bypass, TCP/UDP, FakeIP/DNS, JSON/SRS, live update and stop cleanup', flush=True)
     except Exception:
         if 'log' in locals() and not log.closed:
             log.seek(0); print(log.read(), flush=True)

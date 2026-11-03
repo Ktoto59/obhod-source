@@ -81,7 +81,9 @@ function generateRouterConfig(input, options = {}) {
   const profile = validateConfig({ ...input, routing: { ...input.routing, trafficMode: 'tun', applicationRules: [] } });
   const config = generateConfig(profile);
   const tun = config.inbounds.find((inbound) => inbound.type === 'tun');
-  Object.assign(tun, { auto_redirect: true, stack: 'system', include_interface: interfaces });
+  // lo enables the native output chains too: router tools receive FakeIP from
+  // dnsmasq just like LAN clients. The same positive set keeps other output direct.
+  Object.assign(tun, { auto_redirect: true, stack: 'system', include_interface: [...interfaces, 'lo'] });
   if (options.ipv6 === true) tun.address.push('fdfe:dcba:9876::1/126');
   config.dns.strategy = options.ipv6 === true ? 'prefer_ipv4' : 'ipv4_only';
   config.dns.reverse_mapping = true;

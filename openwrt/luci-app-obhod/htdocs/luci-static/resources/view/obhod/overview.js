@@ -599,7 +599,7 @@ return view.extend({
     var profile=this.protocols.value==='proxy'?'lite':'full', selected=(this.coreCatalog.versions || []).find(function(row){return row.profile===profile && row.value===this.coreVersion.value;},this);
     var size=selected || this.coreSizes[profile];
     this.coreVersionHelp.textContent=this.coreCatalog.unavailable?'Установка недоступна, пока не загружен каталог версий.':selected && !selected.recommended
-      ?'Для отката на эту сборку нужна прежняя версия приложения. В Обходе 0.1.17 требуется ядро .4; при запуске оно будет установлено автоматически. Подключения сохранятся.'
+      ?'Для отката на эту сборку нужна прежняя версия приложения. В текущей версии Обхода требуется ядро .4; при запуске оно будет установлено автоматически. Подключения сохранятся.'
       :selected?'Совместимая сборка Обхода для вашего роутера. Скачивание проверяется по SHA-256.':'Будет установлен пакет, доступный в репозитории вашей версии OpenWrt.';
     function mb(bytes){return (bytes/1048576).toLocaleString('ru-RU',{maximumFractionDigits:1});}
     this.protocolHelp.textContent += size

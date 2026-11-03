@@ -4,6 +4,7 @@ import { readfile, writefile } from 'fs';
 let file = ARGV[0], config = json(readfile(file));
 let tun = filter(config.inbounds || [], i => i.type == 'tun')[0];
 if (!tun) die('Missing TUN inbound');
+if (length(tun.include_interface || []) && index(tun.include_interface, 'lo') < 0) push(tun.include_interface, 'lo');
 let addresses = [], sets = [];
 for (let dns in config.dns.servers) if (dns.type == 'fakeip') {
     if (dns.inet4_range) push(addresses, dns.inet4_range);

@@ -29,7 +29,7 @@ test('OpenWrt starts without bundled accounts or preselected provider rules', ()
 test('router configuration scopes TUN to LAN and provides a loopback DNS upstream', () => {
   const config = generateRouterConfig(profile(), { interfaces: ['br-lan', 'br-guest'], ipv6: true });
   const tun = config.inbounds.find((inbound) => inbound.type === 'tun');
-  assert.deepEqual(tun.include_interface, ['br-lan', 'br-guest']);
+  assert.deepEqual(tun.include_interface, ['br-lan', 'br-guest', 'lo']);
   assert.equal(tun.auto_redirect, true);
   assert.equal(tun.stack, 'system');
   assert.equal(tun.address.length, 2);
