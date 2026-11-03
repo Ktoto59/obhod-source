@@ -96,12 +96,46 @@ test('FakeIP uses common domain rules before sniffing and keeps ordinary DNS dir
     assert.equal(config.experimental.cache_file.store_fakeip, true);
     assert.equal(config.experimental.cache_file.path, '/var/run/obhod/dns-cache.db');
     assert.ok(config.route.rules.some(r => r.action === 'reject' && r.port === 443 && r.network === 'udp'));
-    assert.ok(config.route.rule_set.every(r => r.download_detour === 'proxy'));
+    assert.ok(config.route.rule_set.filter(r => r.type === 'remote').every(r => r.download_detour === 'proxy'));
   }
 });
 
 test('legacy DNS options cannot disable FakeIP', () => {
   assert.ok(generateRouterConfig(profile(), { dnsMode: 'realip' }).dns.servers.some(s => s.type === 'fakeip'));
+});
+
+test('explicit CIDRs route before sniffing while DNS, restored names and private routing keep their precedence', () => {
+  const value = profile(); value.routing.localLists[0].cidrs = ['203.0.113.0/24'];
+  const config = generateRouterConfig(value);
+  const rules = config.route.rules, sniff = rules.findIndex(r => r.action === 'sniff');
+  const ip = rules.findIndex(r => r.ip_cidr?.includes('203.0.113.0/24'));
+  assert.ok(rules.findIndex(r => r.action === 'hijack-dns') < ip);
+  assert.ok(rules.findIndex(r => r.domain_suffix) < ip);
+  assert.ok(rules.findIndex(r => r.ip_is_private && r.outbound === 'direct') < ip);
+  assert.ok(ip < sniff);
+});
+
+test('nftables selects the union of FakeIP, enabled subnets and live rule sets without a bypass option', () => {
+  const value = profile();
+  value.routing.localLists[0].cidrs = ['203.0.113.0/24', '2001:db8:123::/48'];
+  value.routing.localLists.push({ id: 'off', name: 'Off', enabled: false, domains: [], cidrs: ['192.0.2.0/24'] });
+  value.routing.presetIds = ['discord'];
+  value.routing.remoteLists = [{ id: 'network', name: 'Networks', enabled: true, kind: 'cidrs', url: 'https://example.org/networks.srs' }];
+  for (const ipv6 of [false, true]) {
+    for (const kernelDirect of [false, true]) {
+      const config = generateRouterConfig(value, { ipv6, kernelDirect });
+      const tun = config.inbounds.find(i => i.type === 'tun');
+      assert.deepEqual(tun.route_address_set, ['obhod-selected-addresses', 'preset-discord', 'remote-network']);
+      assert.equal(tun.route_address, undefined, 'do not intersect static and live selections');
+      assert.equal(tun.strict_route, false, 'unselected IPv6 stays in Linux when IPv6 proxying is disabled');
+      const local = config.route.rule_set.find(r => r.tag === 'obhod-selected-addresses');
+      assert.deepEqual(local.rules[0].ip_cidr.slice().sort(), ['198.18.0.0/15', ...(ipv6 ? ['2001:2::/48'] : []), '203.0.113.0/24', '2001:db8:123::/48'].sort());
+      assert.ok(!config.route.rules.some(r => r.action === 'bypass'));
+    }
+  }
+  const empty = profile(); empty.routing.localLists = [];
+  const config = generateRouterConfig(empty);
+  assert.deepEqual(config.route.rule_set, [{ type: 'inline', tag: 'obhod-selected-addresses', rules: [{ ip_cidr: ['198.18.0.0/15'] }] }]);
 });
 
 test('LuCI shares the real parser and generator without a Node.js runtime', () => {

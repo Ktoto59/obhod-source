@@ -30,6 +30,13 @@ function configureFakeIp(config, profile, options) {
     delete resolve.outbound;
     return [resolve, { ...rule }];
   });
+  const ipRoutes = config.route.rules.filter(rule => rule.action === 'route' && rule.ip_cidr);
+  if (ipRoutes.length) {
+    // Preserve the private-address policy before explicit CIDRs, while routing
+    // server-first TCP and non-DNS UDP without waiting for a sniff timeout.
+    early.push(...config.route.rules.filter(rule => rule.ip_is_private && rule.outbound === 'direct').map(rule => ({ ...rule })));
+    early.push(...ipRoutes.map(rule => ({ ...rule })));
+  }
   config.route.rules.splice(config.route.rules.findIndex(rule => rule.action === 'sniff'), 0, ...early);
 }
 
@@ -38,6 +45,25 @@ function defaultRouterProfile() {
   profile.routing.localLists = [];
   profile.routing.presetIds = [];
   return profile;
+}
+
+function configureKernelRouting(config) {
+  const tun = config.inbounds.find(inbound => inbound.type === 'tun');
+  const addresses = config.dns.servers.filter(server => server.type === 'fakeip')
+    .flatMap(server => [server.inet4_range, server.inet6_range].filter(Boolean));
+  const sets = [];
+  for (const rule of config.route.rules) {
+    if (rule.action !== 'route' || rule.outbound === 'direct') continue;
+    addresses.push(...(rule.ip_cidr || []));
+    sets.push(...(rule.rule_set || []));
+  }
+  // One union is essential: route_address and route_address_set are intersected
+  // by auto_redirect. Keep FakeIP present even when no subnet list is selected.
+  config.route.rule_set.push({ type: 'inline', tag: 'obhod-selected-addresses',
+    rules: [{ ip_cidr: [...new Set(addresses)] }] });
+  tun.route_address_set = ['obhod-selected-addresses', ...new Set(sets)];
+  // Disabling IPv6 proxying must not install a global IPv6 unreachable rule.
+  tun.strict_route = false;
 }
 
 function generateRouterConfig(input, options = {}) {
@@ -74,6 +100,7 @@ function generateRouterConfig(input, options = {}) {
   for (const rule of config.route.rules) if (rule.action === 'sniff') rule.timeout = '1s';
   configureFakeIp(config, profile, options);
   configureDnsPool(config, profile, options);
+  configureKernelRouting(config);
   if (options.disableQuic === true) config.route.rules.splice(1, 0, { network: 'udp', port: 443, action: 'reject' });
   if (options.downloadListsViaProxy === true) {
     const proxyTag = profile.routing.failoverEnabled ? 'proxy' : tunnelTag({ id: profile.routing.activeTunnelId });

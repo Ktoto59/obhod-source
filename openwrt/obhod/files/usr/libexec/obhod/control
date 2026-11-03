@@ -34,6 +34,16 @@ prepare() {
 		chmod 600 "$RUN/controller-secret"
 	fi
 	ucode /usr/libexec/obhod/prepare.uc || { error 'Не удалось подготовить конфигурацию службы.'; return 1; }
+	# 1.13 introduced NFQUEUE before the native address-set filter. Require the
+	# fixed ordering; older 1.12 cores select destinations in nftables already.
+	if { [ "$1" -gt 1 ] || [ "$2" -ge 13 ]; } && ! /usr/bin/sing-box obhod-capabilities 2>/dev/null | grep -qx kernel-route-set-v1; then
+		/usr/libexec/obhod/core-upgrade-required > "$RUN/core-upgrade-log" 2>&1 || {
+			error 'Не удалось установить обязательное ядро .4. Профиль сохранён; проверьте место, интернет и журнал core-upgrade-log.'; return 1;
+		}
+	fi
+	ucode /usr/libexec/obhod/kernel-route.uc "$RUN/config.json" || {
+		error 'Не удалось подготовить отбор трафика в nftables.'; return 1;
+	}
 	if /usr/bin/sing-box obhod-capabilities 2>/dev/null | grep -qx dns-pool-v1; then
 		ucode /usr/libexec/obhod/native-dns.uc || { error 'Не удалось подготовить встроенную группу DNS.'; return 1; }
 	fi
@@ -48,6 +58,12 @@ prepare() {
 	/usr/bin/sing-box check -c "$RUN/config.json" >/dev/null 2>&1 || {
 		error 'Ядро отклонило конфигурацию. Проверьте версию и поддерживаемые протоколы.'; return 1;
 	}
+	# An unchanged save is safe only for the sources which prepared this run.
+	# App updates and external settings edits must still take the restart path.
+	sha256sum "$STATE" /usr/libexec/obhod/prepare.uc /usr/libexec/obhod/kernel-route.uc \
+		/usr/libexec/obhod/native-dns.uc /usr/libexec/obhod/dns-pool-config.uc \
+		/usr/libexec/obhod/dns-pool.uc /usr/libexec/obhod/control /usr/libexec/obhod/run \
+		/etc/init.d/obhod > "$RUN/prepared.sha.tmp" && mv "$RUN/prepared.sha.tmp" "$RUN/prepared.sha"
 }
 
 ready() {
@@ -76,9 +92,40 @@ stop_and_wait() {
 	done
 }
 
+recover() {
+	# Event-driven recovery, serialized with LuCI/apply; never enable a service
+	# the user stopped. A healthy service keeps all existing connections.
+	[ "$(uci -q get obhod.main.enabled)" = 1 ] || return 0
+	if [ -n "$1" ]; then
+		case "$1" in *[!a-zA-Z0-9_-]*) return 1;; esac
+		[ "$(ubus call "network.interface.$1" status 2>/dev/null | jsonfilter -e '@.up')" = true ] || return 0
+	fi
+	mkdir /var/lock/obhod-apply.lock 2>/dev/null || return 0
+	trap 'rmdir /var/lock/obhod-apply.lock 2>/dev/null' EXIT
+	[ "$(uci -q get obhod.main.enabled)" = 1 ] || return 0
+	pid=$(cat "$RUN/run-pid" 2>/dev/null)
+	case "$pid" in ''|*[!0-9]*) pid= ;; esac
+	if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+		# procd may still be starting it (including loading cached rule sets).
+		[ -f "$RUN/ready" ] || return 0
+		if grep -q '0100007F:041D .* 0A ' /proc/net/tcp &&
+			nft list set inet sing-box inet4_route_address_set >/dev/null 2>&1; then
+			return 0
+		fi
+	fi
+	logger -t obhod 'Сеть доступна; восстанавливаем службу Обхода.'
+	if ! "$0" start; then
+		# A transient outage must retain the user's enabled intent for the next
+		# link-up event, even when this particular recovery attempt failed.
+		set_enabled 1
+		return 1
+	fi
+}
+
 case "$1" in
 	prepare) prepare ;;
 	ready) ready ;;
+	recover) recover "$2" ;;
 	start)
 		stop_and_wait || exit 1
 		set_enabled 1 || exit 1

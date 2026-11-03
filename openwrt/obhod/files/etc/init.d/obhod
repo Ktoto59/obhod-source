@@ -39,6 +39,16 @@ reload_service() {
 }
 
 service_triggers() {
+	# As in Podkop's WAN monitoring, debounce network events. A healthy core
+	# handles address changes itself; recover only restarts a missing/broken one.
+	PROCD_RELOAD_DELAY=2000
 	procd_add_reload_trigger obhod firewall
-	procd_add_interface_trigger 'interface.*' lan /etc/init.d/obhod restart
+	config_load network
+	config_foreach obhod_network_trigger interface
+}
+
+obhod_network_trigger() {
+	# procd's .* matcher is prefix-only; a suffix .up would also match down.
+	# Pass the logical interface and check its current up state in recover.
+	[ "$1" = loopback ] || procd_add_interface_trigger 'interface.*' "$1" /usr/libexec/obhod/control recover "$1"
 }

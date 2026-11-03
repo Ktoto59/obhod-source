@@ -12,17 +12,21 @@ select_compat_core() {
 	if command -v sing-box >/dev/null 2>&1; then
 		compat_current=$(sing-box version 2>/dev/null | head -n 1 | sed -n 's/^sing-box version //p')
 		if [ "${compat_requested:-auto}" = auto ]; then
-		case "$compat_current" in 1.12.*|1.13.[0-9]|1.13.1[0-9]|1.13.20|1.13.21|1.13.21-obhod.1|1.13.21-obhod.2|1.13.21-obhod.3|'') ;; *) return 0;; esac
+		case "$compat_current" in 1.12.*|1.13.[0-9]|1.13.1[0-9]|1.13.20|1.13.21|1.13.21-obhod.1|1.13.21-obhod.2|1.13.21-obhod.3|1.13.21-obhod.4|'') ;; *) return 0;; esac
 		fi
 	fi
 	compat_profile=full; [ "$core" != sing-box-tiny ] || compat_profile=lite
 	ucode "$compat_selector" "$compat_catalog" "$compat_arch" "$manager" "$compat_profile" "$compat_release" "${compat_requested:-auto}" > "$work/core-selection" || die 'Не удалось проверить каталог совместимых ядер.'
 	[ -s "$work/core-selection" ] || return 0
 	read -r compat_url compat_sha compat_bytes compat_installed compat_version < "$work/core-selection"
+	# A local .4 must not be downgraded by the still-public .3 catalog.
+	if [ "${compat_requested:-auto}" = auto ] && [ "${compat_current:-}" = 1.13.21-obhod.4 ]; then
+		case "$compat_version" in *400) ;; *) return 0;; esac
+	fi
 	compat=1
 	compat_plan_installed=$compat_installed
 	compat_plan_download=$compat_bytes
-	compat_target=1.13.21-obhod.3; case "$compat_version" in *200) compat_target=1.13.21-obhod.2;; esac
+	compat_target=1.13.21-obhod.3; case "$compat_version" in *200) compat_target=1.13.21-obhod.2;; *400) compat_target=1.13.21-obhod.4;; esac
 	if [ "${compat_current:-}" = "$compat_target" ] && [ "$(find_core)" = "$core" ] && /usr/bin/sing-box obhod-capabilities 2>/dev/null | grep -qx dns-pool-v1; then
 		compat_skip=1; compat_plan_installed=0; compat_plan_download=0
 	fi
@@ -63,8 +67,9 @@ install_compat_core() {
 		if [ -n "$compat_old" ]; then
 			mkdir "$work/rollback"
 			compat_old_version=$(opkg status "$compat_old" | awk '$1=="Version:" {print $2;exit}')
-			case "$compat_old_version" in 1.13.21-200|1.13.21-300)
+			case "$compat_old_version" in 1.13.21-200|1.13.21-300|1.13.21-400)
 				compat_old_core=1.13.21-obhod.3; [ "$compat_old_version" != 1.13.21-200 ] || compat_old_core=1.13.21-obhod.2
+				[ "$compat_old_version" != 1.13.21-400 ] || compat_old_core=1.13.21-obhod.4
 				compat_old_profile=full; [ "$compat_old" != sing-box-tiny ] || compat_old_profile=lite
 				ucode "$compat_selector" "$compat_catalog" "$compat_arch" opkg "$compat_old_profile" "$compat_release" "$compat_old_core" > "$work/rollback/selection" || die 'Не удалось проверить пакет отката.'
 				[ -s "$work/rollback/selection" ] || die 'Точная версия ядра для отката недоступна. Установка отменена.'

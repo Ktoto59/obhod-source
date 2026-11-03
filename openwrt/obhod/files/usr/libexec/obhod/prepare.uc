@@ -64,4 +64,15 @@ if (!length(filter(config.route.rules, r => r.action=='hijack-dns' && r.port==53
 }
 // Apply the routing fix to existing profiles without rewriting user settings.
 for (let rule in config.route?.rules || []) if (rule.action == 'sniff') rule.timeout = '1s';
+let sniff = -1;
+for (let i = 0; i < length(config.route.rules); i++) if (config.route.rules[i].action == 'sniff') { sniff = i; break; }
+if (sniff >= 0) {
+    let early = slice(config.route.rules, 0, sniff);
+    let ips = filter(slice(config.route.rules, sniff + 1), r => r.action == 'route' && r.ip_cidr &&
+        !length(filter(early, e => sprintf('%J', e) == sprintf('%J', r))));
+    if (length(ips)) {
+        let private = filter(config.route.rules, r => r.ip_is_private && r.outbound == 'direct');
+        splice(config.route.rules, sniff, 0, ...private, ...ips);
+    }
+}
 writefile('/var/run/obhod/config.json', sprintf('%J\n', config));

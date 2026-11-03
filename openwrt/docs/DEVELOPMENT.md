@@ -2,6 +2,9 @@
 
 [← Руководство пользователя](../README.md) · [Совместимое ядро](../../core/README.md)
 
+[Соединения и восстановление](STABILITY.md) описывает проверки сетевых событий,
+повторного сохранения, запуска из кэша и явных IP-маршрутов.
+
 Команды ниже выполняются из корня репозитория. Для Linux-проверок используется отдельная тестовая среда.
 
 ## Сборка
@@ -22,6 +25,8 @@ npm run test:openwrt:ui
 npm run openwrt:fixture
 python3 scripts/test-openwrt-system.py
 python3 scripts/test-openwrt-dns-pool.py
+python3 scripts/test-openwrt-core-migration.py
+sudo unshare -n python3 scripts/test-openwrt-kernel-routing.py /path/to/sing-box-linux-amd64-full
 npm run test:openwrt:ui -- --luci-loader .tmp/openwrt-tools/luci-25.12.6.js --luci-theme .tmp/openwrt-tools/luci-bootstrap-25.12.6.css
 ```
 
@@ -39,6 +44,15 @@ npm run test:openwrt:ui -- --luci-loader .tmp/openwrt-tools/luci-25.12.6.js --lu
 чекбоксов, вкладки, сохранение ввода, несовместимые списки и ширины 320/390 пикселей.
 Изображения тёмного, светлого и мобильного интерфейса сохраняются в `.tmp/openwrt-ui-preview`.
 Код LuCI используется только в тесте и не включается в наши пакеты.
+
+`test-openwrt-kernel-routing.py` проверяет настоящее ядро с функцией
+`kernel-route-set-v1` в отдельных сетевых пространствах имён. Проверяются
+первые TCP/UDP-пакеты прямого трафика (счётчики NFQUEUE не растут), FakeIP,
+DNS, IPv6, JSON/SRS, обновление адресного набора без перезапуска и удаление
+TUN/правил при остановке. На физическом роутере нужно отдельно проверить
+dnsmasq и procd. При замере скорости учитывайте аппаратный offload:
+счётчики PPPoE могут не отражать весь поток; для Windows VPN используется
+разница счётчиков RAS, а CPU sing-box считается по `/proc/stat` и `/proc/PID/stat`.
 
 Для создания APK нужен Linux и apk-tools 3 с командой `mkpkg`. Для этой сборки
 использован официальный `apk-tools-static 3.0.8-r0` Alpine Linux; инструмент

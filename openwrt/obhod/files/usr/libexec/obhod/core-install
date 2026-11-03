@@ -12,7 +12,7 @@ profile=${2:-}
 case "$profile" in lite|full|remove) ;; *) die 'Выберите lite, full или remove.' ;; esac
 compat_requested=${4:-auto}
 [ "$1" != start ] || compat_requested=${3:-auto}
-case "$compat_requested" in auto|1.13.21-obhod.2|1.13.21-obhod.3) ;; *) die 'Неизвестная версия ядра.' ;; esac
+case "$compat_requested" in auto|1.13.21-obhod.2|1.13.21-obhod.3|1.13.21-obhod.4) ;; *) die 'Неизвестная версия ядра.' ;; esac
 mkdir -p "$RUN"; chmod 700 "$RUN"
 case "$1" in
 	start)

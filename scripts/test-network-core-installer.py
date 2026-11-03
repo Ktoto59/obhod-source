@@ -84,6 +84,13 @@ echo "SELECTED=$compat"
         assert (lab/'tmp/apk-calls').read_bytes()==calls, 'Installed core must not be downloaded or replaced'
         (lab/'tmp/version').write_text('1.14.0');assert 'SELECTED=0' in run()
         (lab/'tmp/version').write_text('1.13.21-obhod.4');assert 'SELECTED=0' in run()
+        for package in catalog['packages']:
+            package['version']='1.13.21-r400'
+        catalog['version']='1.13.21-obhod.4';catalog_path.write_text(json.dumps(catalog))
+        assert 'SELECTED=1' in run(), 'The local .4 catalog supports automatic same-version flavor changes'
+        for package in catalog['packages']:
+            package['version']='1.13.21-r300'
+        catalog.pop('version');catalog_path.write_text(json.dumps(catalog))
         (lab/'tmp/version').write_text('1.12.22');assert 'SELECTED=1' in run()
         (lab/'etc/apk/arch').write_text('x86_64');assert 'SELECTED=0' in run()
         (lab/'etc/apk/arch').write_text('aarch64_cortex-a53');assert 'SELECTED=1' in run('sing-box')

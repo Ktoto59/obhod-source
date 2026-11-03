@@ -74,13 +74,42 @@ def prepare():
     if database.exists():
         shutil.rmtree(database)
     inside('/usr/bin/apk', '--initdb', '--no-network', '--no-scripts', 'add', '--allow-untrusted', '/tmp/testdeps.apk',
-           '/tmp/obhod-0.1.16-r1.apk', '/tmp/luci-app-obhod-0.1.16-r1.apk')
+           '/tmp/obhod-0.1.17-r1.apk', '/tmp/luci-app-obhod-0.1.17-r1.apk')
     assert (LAB / 'www/luci-static/resources/view/obhod/overview.js').exists()
     assert (LAB / 'www/luci-static/resources/obhod/overview.css').exists()
     assert (LAB / 'etc/obhod').stat().st_mode & 0o777 == 0o700
     assert not (LAB / 'etc/obhod/settings.json').exists()
     assert inside('/sbin/uci', '-q', 'get', 'obhod.main.enabled') == '0'
     print('PASS: real OpenWrt APK installation, payload, permissions and disabled defaults')
+
+
+def kernel_route_tests():
+    """Use real ucode to upgrade old saved configs without changing their rules."""
+    script = '/usr/libexec/obhod/kernel-route.uc'
+    shutil.copyfile(ROOT/'openwrt/obhod/files/usr/libexec/obhod/kernel-route.uc', LAB/script.lstrip('/'))
+    config = LAB/'tmp/kernel-config.json'
+    for ipv6 in [False, True]:
+        original = {'inbounds': [{'type': 'tun', 'strict_route': True}],
+                    'dns': {'servers': [{'type': 'fakeip', 'inet4_range': '198.18.0.0/15',
+                        **({'inet6_range': '2001:2::/48'} if ipv6 else {})}]},
+                    'route': {'rules': [
+                        {'inbound': ['dns-in'], 'action': 'hijack-dns'},
+                        {'ip_cidr': ['203.0.113.0/24'], 'action': 'route', 'outbound': 'proxy'},
+                        {'rule_set': ['selected'], 'action': 'route', 'outbound': 'proxy'},
+                        {'domain_suffix': ['selected.example'], 'action': 'route', 'outbound': 'proxy'},
+                        {'action': 'sniff'}], 'rule_set': [{'type': 'remote', 'tag': 'selected'}]}}
+        config.write_text(json.dumps(original))
+        inside('/usr/bin/ucode', script, '/tmp/kernel-config.json')
+        result = json.loads(config.read_text())
+        assert result['route']['rules'] == original['route']['rules']
+        assert result['inbounds'][0]['route_address_set'] == ['obhod-selected-addresses', 'selected']
+        assert result['inbounds'][0]['strict_route'] is False
+        assert result['route']['rule_set'][-1]['rules'] == [{'ip_cidr': [
+            '198.18.0.0/15', *(['2001:2::/48'] if ipv6 else []), '203.0.113.0/24']}]
+        inside('/usr/bin/ucode', script, '/tmp/kernel-config.json')
+        assert json.loads(config.read_text()) == result
+    config.unlink()
+    print('PASS: runtime kernel selection, FakeIP/subnet/live-set union, IPv6 and idempotent legacy migration')
 
 
 def dns_tests():
@@ -241,6 +270,20 @@ def rpc_tests():
     assert call('apply', {'settings': json.dumps(state), 'start': True})['ok']
     assert call('status', {})['running']
     assert '1.12.22' in call('status', {})['version']
+    # Equivalent JSON does not restart the running service or rewrite flash.
+    unchanged=(LAB/'etc/obhod/settings.json').read_bytes()
+    (LAB/'var/run/obhod/prepared.sha').write_text(inside('/bin/sh','-c','sha256sum /etc/obhod/settings.json /usr/libexec/obhod/prepare.uc')+'\n')
+    manager.write_text('#!/bin/sh\necho "$1" >> /tmp/unchanged-start-calls\nexit 1\n'); manager.chmod(0o755)
+    same=json.dumps(dict(reversed(list(state.items()))),indent=2)
+    assert call('apply',{'settings':same,'start':True})['ok']
+    assert (LAB/'etc/obhod/settings.json').read_bytes()==unchanged
+    assert not (LAB/'tmp/unchanged-start-calls').exists()
+    assert (LAB/'var/run/obhod/ready').exists()
+    prepared=LAB/'usr/libexec/obhod/prepare.uc'; old_prepare=prepared.read_bytes()
+    prepared.write_bytes(old_prepare+b'\n// App update fixture\n')
+    assert not call('apply',{'settings':same,'start':True})['ok'], 'An app update must not be mistaken for a no-op'
+    prepared.write_bytes(old_prepare)
+    manager.write_text('#!/bin/sh\ncase "$1" in start|restart) touch /var/run/obhod/ready;; stop) rm -f /var/run/obhod/ready;; esac\n');manager.chmod(0o755)
     assert call('stop', {})['ok']
     assert not call('status', {})['running']
     assert (LAB / 'etc/obhod/settings.json').stat().st_mode & 0o777 == 0o600
@@ -380,11 +423,79 @@ def lifecycle_tests():
     print('PASS: actual supervisor stops the core, FIFO logger and sleeping monitor within the procd deadline')
 
 
+def recovery_tests():
+    """Exercise event recovery with real ash/UCI, without touching host networking."""
+    paths=['etc/init.d/obhod','etc/config/obhod','etc/config/network','usr/sbin/nft','bin/ubus',
+           'var/run/obhod/run-pid','var/run/obhod/ready','proc/net/tcp']
+    saved={name:(LAB/name).read_bytes() if (LAB/name).exists() else None for name in paths}
+    calls=LAB/'tmp/recovery-calls'
+    try:
+        # A link-up event for any configured LAN/WAN can recover after a cold
+        # start without WAN. Link-down and loopback do not trigger a restart.
+        shutil.copyfile(ROOT/'openwrt/obhod/files/etc/init.d/obhod', LAB/'etc/init.d/obhod')
+        (LAB/'etc/config/network').write_text("config interface 'loopback'\nconfig interface 'lan'\nconfig interface 'wan'\nconfig interface 'guest'\n")
+        triggers=inside('/bin/sh','-c', '''
+. /lib/functions.sh
+. /etc/init.d/obhod
+procd_add_reload_trigger() { :; }
+procd_add_interface_trigger() { echo "$*"; }
+service_triggers
+echo "delay=$PROCD_RELOAD_DELAY"
+''')
+        assert 'interface.* wan /usr/libexec/obhod/control recover wan' in triggers
+        assert 'interface.* guest /usr/libexec/obhod/control recover guest' in triggers
+        assert 'loopback' not in triggers and 'delay=2000' in triggers
+        manager=LAB/'etc/init.d/obhod'
+        manager.write_text('''#!/bin/sh
+echo "$1" >> /tmp/recovery-calls
+case "$1" in
+ stop) rm -f /var/run/obhod/ready;;
+ start) [ ! -f /tmp/recovery-reject ] || exit 1; touch /var/run/obhod/ready;;
+esac
+''');manager.chmod(0o755)
+        (LAB/'usr/sbin/nft').write_text('#!/bin/sh\nexit 0\n');(LAB/'usr/sbin/nft').chmod(0o755)
+        (LAB/'bin/ubus').write_text('''#!/bin/sh
+if [ "$2" = network.interface.wan ]; then
+ [ ! -f /tmp/recovery-wan-up ] && echo '{"up":false}' || echo '{"up":true}'
+else echo '{}'; fi
+''');(LAB/'bin/ubus').chmod(0o755)
+        (LAB/'proc/net/tcp').write_text(' 0: 0100007F:041D 00000000:0000 0A \n')
+        pid=LAB/'var/run/obhod/run-pid'; ready=LAB/'var/run/obhod/ready'
+        pid.write_text(str(os.getpid()));ready.touch()
+        inside('/sbin/uci','set','obhod.main.enabled=0');inside('/sbin/uci','commit','obhod')
+        inside('/usr/libexec/obhod/control','recover'); assert not calls.exists()
+        inside('/sbin/uci','set','obhod.main.enabled=1');inside('/sbin/uci','commit','obhod')
+        inside('/usr/libexec/obhod/control','recover'); assert not calls.exists(), 'Healthy core must keep its connections'
+        ready.unlink()
+        inside('/usr/libexec/obhod/control','recover'); assert not calls.exists(), 'Do not interrupt a running startup'
+        pid.write_text('99999999')
+        inside('/bin/mkdir','/var/lock/obhod-apply.lock')
+        inside('/usr/libexec/obhod/control','recover'); assert not calls.exists(), 'Respect an active apply/job'
+        inside('/bin/rmdir','/var/lock/obhod-apply.lock')
+        inside('/usr/libexec/obhod/control','recover','wan'); assert not calls.exists(), 'Do not restart during WAN down'
+        (LAB/'tmp/recovery-wan-up').touch()
+        inside('/usr/libexec/obhod/control','recover','wan')
+        assert calls.read_text().splitlines()==['stop','start'] and ready.exists()
+        assert inside('/sbin/uci','get','obhod.main.enabled')=='1'
+        (LAB/'tmp/recovery-reject').touch();ready.unlink()
+        failed=run(['chroot',LAB,'/usr/libexec/obhod/control','recover'])
+        assert failed.returncode != 0 and not ready.exists()
+        assert inside('/sbin/uci','get','obhod.main.enabled')=='1', 'Keep user intent after a transient failure'
+        assert not (LAB/'var/lock/obhod-apply.lock').exists()
+    finally:
+        for name,data in saved.items():
+            file=LAB/name
+            if data is None:file.unlink(missing_ok=True)
+            else:file.write_bytes(data)
+        calls.unlink(missing_ok=True);(LAB/'tmp/recovery-reject').unlink(missing_ok=True);(LAB/'tmp/recovery-wan-up').unlink(missing_ok=True)
+    print('PASS: debounced WAN/LAN up recovery, no healthy restart, disabled/busy/startup guards and retry intent')
+
+
 def installer_tests():
     directory = LAB / 'tmp/installer'
     directory.mkdir()
-    for name in ['install.sh', 'installer-plan.uc', 'package-lib.sh', 'core-compat.sh', 'core-select.uc', 'core-catalog.json', 'presets.tsv', 'SHA256SUMS', 'LICENSE', 'NOTICE', 'README.md', 'obhod-0.1.16-r1.apk',
-                 'luci-app-obhod-0.1.16-r1.apk', 'obhod_0.1.16-1_all.ipk', 'luci-app-obhod_0.1.16-1_all.ipk']:
+    for name in ['install.sh', 'installer-plan.uc', 'package-lib.sh', 'core-compat.sh', 'core-select.uc', 'core-catalog.json', 'presets.tsv', 'SHA256SUMS', 'LICENSE', 'NOTICE', 'README.md', 'obhod-0.1.17-r1.apk',
+                 'luci-app-obhod-0.1.17-r1.apk', 'obhod_0.1.17-1_all.ipk', 'luci-app-obhod_0.1.17-1_all.ipk']:
         shutil.copyfile(PACKAGES / name, directory / name)
     # Resource fixtures are confined to this disposable chroot.
     (LAB / 'proc').mkdir(exist_ok=True)
@@ -492,7 +603,7 @@ def installer_tests():
     assert state.read_text() == '{"existing":"profile"}'
     assert inside('/bin/sh', '-c', 'test -f /var/run/obhod/ready') == ''
     calls = (LAB / 'tmp/installer-calls').read_text()
-    assert 'apk update' in calls and 'apk --no-network add --allow-untrusted ./obhod-0.1.16-r1.apk' in calls
+    assert 'apk update' in calls and 'apk --no-network add --allow-untrusted ./obhod-0.1.17-r1.apk' in calls
     (LAB / 'etc/apk/world').unlink()
     (LAB / 'etc/openwrt_release').write_text("DISTRIB_ID='OpenWrt'\nDISTRIB_RELEASE='24.10.4'\n")
     opkg = LAB / 'bin/opkg'
@@ -502,8 +613,8 @@ def installer_tests():
     (LAB/'var/opkg-lists/fixture').write_text('Package: sing-box\nInstalled-Size: 33554432\nSize: 8388608\n\n')
     inside('/bin/sh', '/tmp/installer/install.sh', '--yes')
     calls = (LAB / 'tmp/installer-calls').read_text()
-    assert 'opkg update' in calls and 'opkg install ./obhod_0.1.16-1_all.ipk ./luci-app-obhod_0.1.16-1_all.ipk' in calls
-    shutil.copyfile(PACKAGES / 'obhod-openwrt-0.1.16.tar.gz', LAB / 'tmp/online-bundle.tar.gz')
+    assert 'opkg update' in calls and 'opkg install ./obhod_0.1.17-1_all.ipk ./luci-app-obhod_0.1.17-1_all.ipk' in calls
+    shutil.copyfile(PACKAGES / 'obhod-openwrt-0.1.17.tar.gz', LAB / 'tmp/online-bundle.tar.gz')
     script = (PACKAGES / 'install-online.sh').read_text().replace("BUNDLE_API_URL=''", "BUNDLE_API_URL='https://api.github.com/repos/example/releases/assets/1'")
     (LAB / 'tmp/online-installer.sh').write_text(script)
     downloader = '#!/bin/sh\nwhile [ "$#" -gt 0 ]; do case "$1" in --output|-O) cp /tmp/online-bundle.tar.gz "$2"; exit $?;; esac; shift; done\nexit 1\n'
@@ -520,7 +631,7 @@ def installer_tests():
     result = run(['chroot', LAB, '/bin/sh', '/tmp/online-installer.sh', '--yes'])
     assert result.returncode != 0 and calls_file.read_text() == before_download
     calls = calls_file.read_text()
-    with (directory / 'obhod_0.1.16-1_all.ipk').open('ab') as target:
+    with (directory / 'obhod_0.1.17-1_all.ipk').open('ab') as target:
         target.write(b'tampered')
     result = run(['chroot', LAB, '/bin/sh', '/tmp/installer/install.sh'])
     assert result.returncode != 0
@@ -689,8 +800,8 @@ esac
     previous = state.read_bytes()
     (LAB/'var/run/obhod/ready').unlink(missing_ok=True)
     (LAB/'tmp/free-flash').write_text('61000'); (LAB/'tmp/free-tmp').write_text('59000')
-    archive = (PACKAGES/'obhod-openwrt-0.1.16.tar.gz').read_bytes()
-    metadata = {'version':'0.1.16','tag':'openwrt-v0.1.16','bundleUrl':'https://api.github.com/repos/Ktoto59/obhod-releases/releases/assets/1','bundleSha256':hashlib.sha256(archive).hexdigest()}
+    archive = (PACKAGES/'obhod-openwrt-0.1.17.tar.gz').read_bytes()
+    metadata = {'version':'0.1.17','tag':'openwrt-v0.1.17','bundleUrl':'https://api.github.com/repos/Ktoto59/obhod-releases/releases/assets/1','bundleSha256':hashlib.sha256(archive).hexdigest()}
     (LAB/'tmp/update-bundle').write_bytes(archive)
     def write_metadata(data): (LAB/'tmp/update-metadata').write_text(json.dumps(data))
     def job(action):
@@ -704,7 +815,7 @@ esac
     write_metadata(metadata)
     result,message = job('check'); assert result == 'available', (result,message)
     assert state.read_bytes() == previous and not (LAB/'tmp/update-controls').exists()
-    for mutation in [{'bundleUrl':'https://example.org/evil'}, {'tag':'v0.18.0'}, {'version':'0.1.16;reboot'}, {'bundleSha256':'x'*64}]:
+    for mutation in [{'bundleUrl':'https://example.org/evil'}, {'tag':'v0.18.0'}, {'version':'0.1.17;reboot'}, {'bundleSha256':'x'*64}]:
         write_metadata({**metadata,**mutation}); result,message = job('install')
         assert result == 'error' and state.read_bytes() == previous
         assert not (LAB/'tmp/update-controls').exists()
@@ -726,7 +837,7 @@ esac
     (LAB/'tmp/update-bundle').write_bytes(archive); write_metadata(metadata)
     result,message=job('install')
     assert result=='done', (result,message,(LAB/'var/run/obhod/update-log').read_text()[-2500:])
-    assert (LAB/'usr/share/obhod/version').read_text().strip()=='0.1.16'
+    assert (LAB/'usr/share/obhod/version').read_text().strip()=='0.1.17'
     assert state.read_bytes()==previous
     # The updater releases its lock before the deferred rpcd reload finishes.
     deadline=time.monotonic()+3
@@ -756,7 +867,7 @@ def ipk_tests():
         result = run(['chroot', lab, '/bin/opkg', '--offline-root', '/', 'install', '/tmp/testdeps.ipk'])
         assert result.returncode == 0, result.stdout + result.stderr
         result = run(['chroot', lab, '/bin/opkg', '--offline-root', '/', 'install',
-                      '/tmp/obhod_0.1.16-1_all.ipk', '/tmp/luci-app-obhod_0.1.16-1_all.ipk'])
+                      '/tmp/obhod_0.1.17-1_all.ipk', '/tmp/luci-app-obhod_0.1.17-1_all.ipk'])
         assert result.returncode == 0, result.stdout + result.stderr
         assert (lab / 'usr/libexec/rpcd/obhod').exists()
         assert (lab / 'www/luci-static/resources/obhod/core.js').exists()
@@ -842,7 +953,7 @@ exec /bin/opkg-real --conf /etc/opkg.conf --offline-root / "$@"
         result=(lab/'var/run/obhod/update-state').read_text().strip()
         assert result=='done', (result,(lab/'var/run/obhod/update-log').read_text()[-2500:])
         assert profile.read_text()=='{"saved":"opkg profile"}'
-        assert (lab/'usr/share/obhod/version').read_text().strip()=='0.1.16'
+        assert (lab/'usr/share/obhod/version').read_text().strip()=='0.1.17'
     print('PASS: real OpenWrt 24.10 opkg installation of both IPK packages')
     print('PASS: native opkg tiny/full switching, verified predownload, failed-install rollback and tamper rejection')
     print('PASS: native opkg self-update from 0.1.4 preserves the saved profile')
@@ -850,11 +961,13 @@ exec /bin/opkg-real --conf /etc/opkg.conf --offline-root / "$@"
 
 if __name__ == '__main__':
     prepare()
+    kernel_route_tests()
     dns_tests()
     schema_tests()
     rpc_tests()
     observability_tests()
     lifecycle_tests()
+    recovery_tests()
     installer_tests()
     core_job_tests()
     apk_switch_tests()

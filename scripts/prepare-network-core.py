@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parent.parent
 REVISIONS = {'sing-box': '628cb31ffa79cffffd34c2f9cde6cae044e4fc12',
              'sing-tun': 'f3b42b8b8e061ef849213a776d9fcf3d5f6ea239',
              'sing': '87773cc9c5b2a4e4fc05cbd2db304ba23ca13515'}
-VERSION = '1.13.21-obhod.3'
+VERSION = '1.13.21-obhod.4'
 
 
 def prepare(box, tun, sing, destination):
@@ -48,6 +48,8 @@ def prepare(box, tun, sing, destination):
         elif project == 'sing-tun':
             with (target/'go.mod').open('a',encoding='utf-8') as f:f.write('\nreplace github.com/sagernet/sing => ../sing\n')
             replace('redirect_route_linux.go', 'int(rand.Uint32())', 'int(rand.Uint32() & 0x7fffffff)')
+            replace('redirect_nftables.go', '\tqueueExpression := func() *expr.Queue {',
+                '\tif err := r.nftablesPreMatchAddressFilter(nft, table, chain, isPrerouting); err != nil {\n\t\treturn err\n\t}\n\n\tqueueExpression := func() *expr.Queue {')
             replace('stack_system.go', 'udpnat.New(s.handler, s.preparePacketConnection, s.udpTimeout, false)', 'udpnat.NewDNSIsolated(s.handler, s.preparePacketConnection, s.udpTimeout, false)')
             replace('stack_gvisor_udp.go', 'udpnat.New(handler, forwarder.PreparePacketConnection, timeout, false)', 'udpnat.NewDNSIsolated(handler, forwarder.PreparePacketConnection, timeout, false)')
             for name in ['ping/destination.go','ping/destination_gvisor.go']:

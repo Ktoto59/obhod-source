@@ -232,6 +232,14 @@ case "$2" in
 		jsonfilter -i "$candidate" -e '@.config' > "$RUN/check.json" 2>/dev/null
 		/usr/bin/sing-box check -c "$RUN/check.json" >/dev/null 2>&1 || { rm -f "$RUN/check.json"; reply 0 'Ядро отклонило конфигурацию; прежние настройки сохранены.'; exit 0; }
 		rm -f "$RUN/check.json"
+		# Reapplying an identical profile must not tear down active connections,
+		# restart dnsmasq or rewrite flash. Explicit restart remains available.
+		if [ -s "$STATE" ] && [ -s "$RUN/prepared.sha" ] &&
+			sha256sum -c "$RUN/prepared.sha" >/dev/null 2>&1 &&
+			ucode /usr/libexec/obhod/settings-equal.uc "$STATE" "$candidate" &&
+			{ [ "$requested_start" != true ] || [ -f "$RUN/ready" ]; }; then
+			reply 1; exit 0
+		fi
 		was_running=0
 		[ ! -f "$RUN/ready" ] || was_running=1
 		old_enabled=$(uci -q get obhod.main.enabled || echo 0)

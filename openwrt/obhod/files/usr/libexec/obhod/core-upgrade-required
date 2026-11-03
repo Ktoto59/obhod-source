@@ -1,0 +1,39 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# Called before launch while the caller owns service/update serialization.
+# Old app updaters preserve the core; migrate it before the new app starts.
+set -eu
+umask 077
+BASE=/usr/libexec/obhod
+die() { printf '%s\n' "$*" >&2; exit 1; }
+. "$BASE/package-lib.sh"
+. "$BASE/core-compat.sh"
+mkdir /var/lock/obhod-core.lock 2>/dev/null || die 'Другая операция ядра ещё выполняется.'
+printf '%s\n' "$$" > /var/lock/obhod-core.lock/pid
+date +%s > /var/lock/obhod-core.lock/started
+printf '%s\n' "$$-required" > /var/lock/obhod-core.lock/token
+work=
+finish() {
+    case "$work" in /tmp/obhod-required-core.*) rm -rf "$work";; esac
+    rm -f /var/lock/obhod-core.lock/pid /var/lock/obhod-core.lock/started /var/lock/obhod-core.lock/token
+    rmdir /var/lock/obhod-core.lock 2>/dev/null || true
+}
+trap finish EXIT
+trap 'exit 130' TERM INT
+work=$(mktemp -d /tmp/obhod-required-core.XXXXXX)
+detect_manager
+core=$(find_core)
+[ -n "$core" ] || die 'Не найден установленный пакет ядра. Установите совместимое ядро во вкладке «Протоколы».'
+compat_catalog=/usr/share/obhod/core-catalog.json
+compat_selector="$BASE/core-select.uc"
+compat_requested=1.13.21-obhod.4
+select_compat_core
+[ "$compat" = 1 ] || die 'Для этой архитектуры нет обязательного ядра .4. Установите совместимое ядро вручную.'
+installed_bytes=$compat_plan_installed
+download_bytes=$compat_plan_download
+check_budget
+# Restore provider DNS before HTTPS downloads when upgrading from an updater
+# which has already stopped the old core, or after an interrupted reboot.
+"$BASE/dns" restore || die 'Не удалось восстановить DNS перед обновлением ядра.'
+install_compat_core
+/usr/bin/sing-box obhod-capabilities 2>/dev/null | grep -qx kernel-route-set-v1 || die 'Ядро не подтвердило отбор до NFQUEUE.'

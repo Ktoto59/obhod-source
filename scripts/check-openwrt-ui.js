@@ -96,7 +96,7 @@ app.whenReady().then(async () => {
             routeName:'Сервер из работающего ядра',routeDelay:'83',routeOk:true,routeCheckedAt:Math.floor(Date.now()/1000) };
         }
         if(spec.method==='interfaces') return {devices:[{name:'br-lan',label:'lan · br-lan · 192.0.2.1',up:true},{name:'br-guest',label:'guest · br-guest',up:true}]};
-        if(spec.method==='coreVersions') return {versions:['lite','full'].flatMap(profile=>[{profile,value:'1.13.21-obhod.3',recommended:true,downloadBytes:11010846,installedBytes:31160083},{profile,value:'1.13.21-obhod.2',recommended:false,downloadBytes:11000000,installedBytes:31000000}])};
+        if(spec.method==='coreVersions') return {versions:['lite','full'].flatMap(profile=>[{profile,value:'1.13.21-obhod.4',recommended:true,downloadBytes:11010846,installedBytes:31160083},{profile,value:'1.13.21-obhod.3',recommended:false,downloadBytes:11000000,installedBytes:31000000}])};
         if(spec.method==='removeCore') {removals++;coreBusy=true;return {ok:true};}
         if(spec.method==='coreSizes') return {lite:{downloadBytes:11010846,installedBytes:31160083},full:{downloadBytes:15601977,installedBytes:44487113}};
         if(spec.method==='service') {serviceRequests.push(args[0]);if(args[0]==='dns-prepare')dnsPoolReady=true;else running=args[0]==='start' || args[0]==='restart';return {ok:true};}
@@ -126,7 +126,7 @@ app.whenReady().then(async () => {
       assert(page.activeTab === 'overview' && page.panels.connections.hidden, 'Only overview initially visible');
       assert(!page.ipv6.checked && page.manageDns.checked, 'Native LuCI preserves false checkbox values');
       assert(!page.dnsMode && !page.root.textContent.includes('прежний режим'), 'FakeIP is the only DNS mode');
-      assert(page.coreVersion.value==='1.13.21-obhod.3' && page.coreVersion.options.length===2,'Versions match the selected kernel flavor');
+      assert(page.coreVersion.value==='1.13.21-obhod.4' && page.coreVersion.options.length===2,'Versions match the selected kernel flavor');
       assert(page.protocolHelp.textContent.includes('29,7') && page.protocolHelp.textContent.includes('10,5'), 'Package sizes come from router metadata');
       page.selectTab('rules');
       page.domainText.value=Array.from({length:1000},(_,i)=>'site'+i+'.example').join('\\n');
@@ -224,7 +224,7 @@ app.whenReady().then(async () => {
       await page.operation(rpc.declare({method:'stop'}));
       page.protocols.value = 'wireguard';
       await page.installProtocols();
-      assert(coreVersionRequests[0]==='1.13.21-obhod.3','Selected kernel version reaches the install RPC');
+      assert(coreVersionRequests[0]==='1.13.21-obhod.4','Selected kernel version reaches the install RPC');
       assert(coreRequests[0] === 'full' && page.coreButton.disabled, 'WireGuard installs full core asynchronously');
       page.selectTab('rules');page.domainText.value='during-install.example';page.markDirty();
       assert(!page.operationNotice.hidden && page.operationTitle.textContent.includes('протоколов') && !page.cancelButton.disabled,'Installation progress is visible on every tab and cancel remains available');
@@ -234,10 +234,10 @@ app.whenReady().then(async () => {
       assert(saves === 1 && notifications.at(-1).includes('окончания установки'), 'Save blocked during package operation');
       coreBusy = false; coreFlavor = 'sing-box'; wireguard = true;
       page.updateStatus(await rpc.declare({method:'status'})());
-      page.protocols.value = 'proxy';page.updateCoreVersions();page.coreVersion.value='1.13.21-obhod.2';page.updateProtocolHelp();
+      page.protocols.value = 'proxy';page.updateCoreVersions();page.coreVersion.value='1.13.21-obhod.3';page.updateProtocolHelp();
       assert(page.coreVersionHelp.textContent.includes('отката'),'Older version explains rollback limitations');
       await page.installProtocols();
-      assert(coreRequests[1] === 'lite' && coreVersionRequests[1]==='1.13.21-obhod.2', 'Proxy selection installs the chosen older tiny version');
+      assert(coreRequests[1] === 'lite' && coreVersionRequests[1]==='1.13.21-obhod.3', 'Proxy selection installs the chosen older tiny version');
       coreBusy = false; page.updateStatus(await rpc.declare({method:'status'})()); page.markDirty();
       await page.updateObhod('check');
       assert(updateRequests[0]==='check' && !page.updateInstall.hidden && page.updateInstall.disabled, 'Update check shows release and protects unsaved drafts');
@@ -269,7 +269,7 @@ app.whenReady().then(async () => {
       assert(!initial.group.checked && !initial.ipv6.checked && !initial.presetInputs.youtube.checked, 'Fresh settings do not check every false boolean');
       const fullPage = new Function('view','rpc','fs','ui','poll','core','E','L', ${JSON.stringify(source)})(view,rpc,fs,ui,{add:()=>{}},core,E,pageL);
       fullPage.render([{coreFlavor:'sing-box',configured:false},'', '', {}, {},await rpc.declare({method:'coreVersions'})()]);
-      assert(fullPage.protocols.value==='all' && fullPage.coreVersion.value==='1.13.21-obhod.3','A full core remains the selected flavor after page reload');
+      assert(fullPage.protocols.value==='all' && fullPage.coreVersion.value==='1.13.21-obhod.4','A full core remains the selected flavor after page reload');
       assert(!initial.dnsMode,'New installations do not offer legacy DNS');
       page.tunnelRows.forEach((row,index)=>{row.input.checked=index<2;}); page.updateAll();
       page.updateStatus({running:false,version:'sing-box version 1.13.21',coreFlavor:'sing-box-tiny',wireguard:false});
