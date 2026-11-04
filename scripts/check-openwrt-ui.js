@@ -125,11 +125,23 @@ app.whenReady().then(async () => {
       await new Promise(resolve => { const link=page.root.querySelector('link'); if(link.sheet) resolve(); else link.onload=resolve; });
       window.obhodPage = page;
       assert(page.activeTab === 'overview' && page.panels.connections.hidden, 'Only overview initially visible');
+      assert(page.pageTitle.textContent==='Обзор' && page.breadcrumb.textContent==='Обзор','Mockup page heading and breadcrumb');
+      assert(page.healthBadge.textContent==='Служба выключена' && page.healthNote.textContent.includes('ещё не проверены'),'No fabricated health checks');
+      assert(page.footer.hidden && !page.dirty,'Clean page hides floating savebar');
+      const darkBefore=page.root.classList.contains('ob-dark');page.themeButton.click();
+      assert(page.root.classList.contains('ob-dark')!==darkBefore && !page.dirty,'Theme is local presentation and does not dirty settings');page.themeButton.click();
+      page.setTheme(false);assert(getComputedStyle(page.root.querySelector('.ob-brand-title')).color===getComputedStyle(page.root).color,'Light brand text overrides surrounding LuCI theme: '+getComputedStyle(page.root.querySelector('.ob-brand-title')).color+' vs '+getComputedStyle(page.root).color);page.setTheme(darkBefore);
+      page.importToggle.click();assert(page.importDetails.open,'Import action expands existing editor');page.importToggle.click();
+      page.serverFilterSelected.click();assert(page.tunnelRows.filter(row=>!row.element.hidden).length===2 && !page.dirty,'Selected server filter preserves settings');
+      page.serverSearch.value='not-found';page.filterTunnels();assert(page.serverEmpty.textContent.includes('не найдены'),'Server filter combines with search');
+      page.serverSearch.value='';page.serverFilterAll.click();assert(page.tunnelRows.every(row=>!row.element.hidden),'All server filter restores list');
       assert(!page.ipv6.checked && page.manageDns.checked, 'Native LuCI preserves false checkbox values');
       assert(!page.dnsMode && !page.root.textContent.includes('прежний режим'), 'FakeIP is the only DNS mode');
       assert(page.coreVersion.value==='1.13.21-obhod.4' && page.coreVersion.options.length===2,'Versions match the selected kernel flavor');
       assert(page.protocolHelp.textContent.includes('29,7') && page.protocolHelp.textContent.includes('10,5'), 'Package sizes come from router metadata');
       page.selectTab('rules');
+      assert(page.pageTitle.textContent==='Правила' && page.pageIntro.textContent.includes('Собственные домены'),'Tab heading follows navigation');
+      assert(!page.cidrDetails.open && !page.remoteDetails.open && page.cidrDetails.contains(page.cidrText),'Separate collapsible IP and remote editors');
       const domainTimings=[];
       const domainQuery=query=>{page.domainSearch.value=query;page.domainSearch.dispatchEvent(new Event('input',{bubbles:true}));};
       const domainFixture=count=>Array.from({length:count},(_,i)=>'site'+String(count-i-1).padStart(5,'0')+'.example').join('\\n');
@@ -145,12 +157,18 @@ app.whenReady().then(async () => {
         else assert(page.domainRows.textContent.includes('Список пуст'),'Empty state');
         if(count===26){page.domainNext.click();page.domainRows.querySelector('button').click();assert(page.domainPage===0 && page.domainRows.children.length===25,'Delete last row clamps page');page.domainUndo.click();assert(page.domainText.value===raw,'Undo restores original position');}
         domainQuery('SITE000');assert(page.domainPage===0,'Search resets page');
-        assert(page.domainCount.textContent==='Найдено '+Math.min(100,count)+' из '+count,'Case insensitive partial search over all pages');
+        assert(page.domainResults.textContent==='Найдено '+Math.min(100,count)+' из '+count,'Case insensitive partial search over all pages');
         domainQuery('missing');assert(page.domainRows.textContent==='Домены не найдены','No matches');
         const searchEnd=performance.now();page.domainClear.click();assert(page.domainSearch.value==='' && document.activeElement===page.domainSearch,'Clear search retains focus');
         domainTimings.push({count,coldRenderMs:Math.round(coldRenderMs*100)/100,renderAndSearchMs:Math.round((searchEnd-start)*100)/100});
       }
-      page.domainNext.click();assert(page.domainPager.textContent==='26–50 из 10000 · Страница 2 из 400','Page range and count');
+      page.domainText.value='test10.example\\ntest2.example';domainQuery('');
+      assert(page.domainRows.querySelector('span').textContent==='test2.example' && page.domainText.value.startsWith('test10'),'Natural presentation sort leaves canonical order intact');
+      page.domainText.value=domainFixture(10000);domainQuery('');
+      page.domainNext.click();assert(page.domainPager.textContent==='26–50 из 10000' && page.domainPageSelect.value==='1' && page.domainPageTotal.textContent==='из 400','Page range and count');
+      page.markDirty(true);const savedFullList=page.domainText.value;
+      page.domainPageSelect.value='399';page.domainPageSelect.dispatchEvent(new Event('change',{bubbles:true}));
+      assert(page.domainPage===399 && page.domainPager.textContent==='9976–10000 из 10000' && !page.dirty && page.domainText.value===savedFullList,'Direct page selection preserves full configuration');
       page.domainSearch.focus();domainQuery('SITE09999.');
       assert(page.domainRows.children.length===1 && document.activeElement===page.domainSearch,'Search across all pages retains focus');
       page.domainRows.querySelector('button').click();assert(!page.domainText.value.includes('site09999.'),'Delete exact filtered domain');
@@ -168,6 +186,7 @@ app.whenReady().then(async () => {
       page.domainBulk.open=true;const bulkNode=page.domainBulkText;
       page.domainBulkText.value=domainFixture(1000)+'\\nhttps://SITE00000.example/path';
       page.domainBulkText.dispatchEvent(new Event('input',{bubbles:true}));
+      assert(!page.footer.hidden && page.footer.classList.contains('has-changes'),'Bulk draft shows floating savebar');
       const bulkDraft=page.domainBulkText.value;
       domainQuery('site00001');page.domainRows.querySelector('button').click();page.domainUndo.click();
       page.domainBulk.open=false;page.selectTab('network');page.selectTab('rules');page.domainBulk.open=true;
@@ -257,6 +276,9 @@ app.whenReady().then(async () => {
       assert(page.diagnosticRows.querySelector('.is-ok .ob-check-ok').textContent.includes('✓') && page.diagnosticRows.querySelector('.is-fail .ob-check-fail').textContent.includes('✕'),'Diagnostic outcomes have colored cards and text indicators');
       assert(getComputedStyle(page.diagnosticRows.querySelector('.is-ok')).borderLeftColor!==getComputedStyle(page.diagnosticRows.querySelector('.is-fail')).borderLeftColor,'Success and failure cards have different colors');
       assert(page.diagnosticRows.textContent.includes('83 мс') && logRequests===0,'Diagnostics does not fetch a collapsed journal');
+      assert(page.diagnosticSummary.textContent==='1 из 2 пройдено' && page.healthBadge.textContent==='Требует внимания','Diagnostics and overview summaries reflect actual checks');
+      assert(page.diagnosticRows.querySelector('details.is-ok') && !page.diagnosticRows.querySelector('details.is-ok').open,'Successful check details start collapsed');
+      assert(page.diagnosticDetails.textContent.includes('Нет ответа'),'Backend diagnostic details retained');
       page.selectTab('diagnostics');await poller();assert(logRequests===0,'Polling skips a collapsed journal');
       var logOpened=new Promise(resolve=>page.logDetails.addEventListener('toggle',resolve,{once:true}));
       page.logDetails.querySelector('summary').click();await logOpened;await page.logsPromise;
@@ -349,13 +371,18 @@ app.whenReady().then(async () => {
     })()`);
     console.log(`OPENWRT_UI_TEST ${JSON.stringify(result)}`);
     const screenshots = path.join(root, '.tmp', 'openwrt-ui-preview');
-    const paint = async () => { await window.webContents.executeJavaScript('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))'); await new Promise(resolve=>setTimeout(resolve,500)); };
+    const paint = async () => { await window.webContents.executeJavaScript('document.getAnimations().forEach(animation=>animation.finish());new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))'); await new Promise(resolve=>setTimeout(resolve,500)); };
     fs.mkdirSync(screenshots, {recursive:true});
     await window.webContents.executeJavaScript("obhodPage.domainText.value=Array.from({length:1000},(_,i)=>'site'+String(i).padStart(5,'0')+'.example').join('\\n')+'\\n'+('a'.repeat(63)+'.').repeat(3)+'example.com'; obhodPage.domainClear.click();");
     window.setContentSize(1180, 1000);
     for (const tab of ['overview','connections','rules','protocols','network','diagnostics']) {
       await window.webContents.executeJavaScript(`obhodPage.selectTab(${JSON.stringify(tab)}); scrollTo(0,0);`);
       await paint();
+      if(tab==='rules'){
+        const layout=await window.webContents.executeJavaScript(`(()=>{const p=obhodPage,search=p.domainSearch.getBoundingClientRect(),entry=p.domainEntry.getBoundingClientRect();return {searchRight:search.right,entryLeft:entry.left,searchWidth:search.width,entryWidth:entry.width,opacity:getComputedStyle(p.panels.rules).opacity,columns:getComputedStyle(p.domainRows).gridTemplateColumns};})()`);
+        if(layout.searchRight>layout.entryLeft)throw new Error('Domain controls overlap: '+JSON.stringify(layout));
+        if(layout.opacity!=='1')throw new Error('Panel not fully visible: '+JSON.stringify(layout));
+      }
       const clip = tab === 'overview' ? {x:0,y:0,width:1180,height:Math.min(1000,Math.ceil(await window.webContents.executeJavaScript('obhodPage.root.getBoundingClientRect().bottom+28')))} : undefined;
       fs.writeFileSync(path.join(screenshots, 'dark-'+tab+'.png'), (await window.webContents.capturePage(clip)).toPNG());
     }
@@ -383,6 +410,14 @@ app.whenReady().then(async () => {
     fs.writeFileSync(path.join(screenshots, 'light-overview.png'), (await window.webContents.capturePage()).toPNG());
     await window.webContents.executeJavaScript("obhodPage.selectTab('rules');scrollTo(0,0);");
     await paint();fs.writeFileSync(path.join(screenshots,'light-rules.png'),(await window.webContents.capturePage()).toPNG());
+    // A readable design preview after the long-hostname layout checks above.
+    await window.webContents.executeJavaScript("obhodPage.domainText.value=Array.from({length:1000},(_,i)=>'site'+String(i).padStart(5,'0')+'.example').join('\\n');obhodPage.domainClear.click();obhodPage.domainBulk.open=false;obhodPage.cidrDetails.open=false;");
+    const editorBottom=await window.webContents.executeJavaScript('Math.ceil(obhodPage.domainCard.getBoundingClientRect().bottom+20)');
+    window.setContentSize(1180,editorBottom);
+    for(const dark of [true,false]){
+      await window.webContents.executeJavaScript(`obhodPage.setTheme(${dark});scrollTo(0,0);`);await paint();
+      fs.writeFileSync(path.join(screenshots,'rules-design-'+(dark?'dark':'light')+'.png'),(await window.webContents.capturePage()).toPNG());
+    }
     clearTimeout(timeout); app.exit(0);
   } catch (error) { clearTimeout(timeout); console.error(error.stack || error); app.exit(1); }
 });

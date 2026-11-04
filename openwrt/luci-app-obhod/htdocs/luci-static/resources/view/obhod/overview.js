@@ -45,13 +45,22 @@ function field(title, input, help) {
   return E('div', { 'class': 'ob-field' }, [E('label', { 'class': 'ob-label', 'for': input.id }, title),
     input, help ? E('p', { 'class': 'ob-help' }, help) : '']);
 }
-function card(title, description, content) {
+function card(title, description, content, badge) {
   return E('section', { 'class': 'ob-card' }, [E('div', { 'class': 'ob-card-heading' }, [
-    E('h3', {}, title), description ? E('p', { 'class': 'ob-help' }, description) : ''])].concat(Array.isArray(content) ? content : [content]));
+    E('h3', {}, title), badge || '']), description ? E('p', { 'class': 'ob-section-description' }, description) : ''].concat(Array.isArray(content) ? content : [content]));
 }
 function switchField(title, input, help) {
   return E('label', { 'class': 'ob-switch-row' }, [E('span', {}, [E('strong', {}, title),
-    help ? E('span', { 'class': 'ob-help' }, help) : '']), input]);
+    help ? E('span', { 'class': 'ob-help' }, help) : '']), E('span', {'class':'ob-toggle'}, [input,E('span',{'class':'ob-track','aria-hidden':'true'})])]);
+}
+function routeIcon() {
+  var svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
+  svg.setAttribute('viewBox','0 0 32 32');svg.setAttribute('fill','none');svg.setAttribute('aria-hidden','true');
+  [['circle',{cx:6.5,cy:24.5,r:2.5,fill:'currentColor'}],
+    ['path',{d:'M9 24.5H14.5C20.6 24.5 23 21.4 23 16V8',stroke:'currentColor','stroke-width':2.8,'stroke-linecap':'round'}],
+    ['path',{d:'M17.5 13.5L23 8L28.5 13.5',stroke:'currentColor','stroke-width':2.8,'stroke-linecap':'round','stroke-linejoin':'round'}]
+  ].forEach(function(spec){var node=document.createElementNS(svg.namespaceURI,spec[0]);Object.keys(spec[1]).forEach(function(key){node.setAttribute(key,spec[1][key]);});svg.appendChild(node);});
+  return svg;
 }
 function lines(value) { return String(value || '').split(/[\r\n,\s]+/).filter(Boolean); }
 function domains(value) {
@@ -126,6 +135,10 @@ return view.extend({
     this.serverSearch = E('input', { type: 'search', placeholder: 'Найти сервер…', 'aria-label': 'Поиск подключений', input: function() { self.filterTunnels(); } });
     this.serverEmpty = E('p', { 'class': 'ob-empty' });
     this.tunnelTotal = E('span', { 'class': 'ob-counter' });
+    this.serverFilter='all';
+    this.serverFilterAll=E('button',{type:'button','class':'ob-chip','aria-pressed':'true',click:function(){self.setServerFilter('all');}},'Все');
+    this.serverFilterSelected=E('button',{type:'button','class':'ob-chip','aria-pressed':'false',click:function(){self.setServerFilter('selected');}},'Выбранные');
+    this.serverVisible=E('span',{'class':'ob-help'});
     this.presetInputs = {};
     this.interfaces = E('input', { type: 'text', value: this.options.interfaces.join(', ') });
     this.interfaceSelect = E('select', { change: function() {
@@ -174,6 +187,11 @@ return view.extend({
     this.dnsPrepareHint = E('p',{'class':'ob-help'});
     this.verboseLogs = checkbox(routing.enableDiagnostics);
     this.diagnosticRows = E('div',{'class':'ob-diagnostic-rows'});
+    this.diagnosticSummary=E('span',{'class':'ob-counter','aria-live':'polite'},'Нет результатов');
+    this.healthBadge=E('span',{'class':'ob-counter'},'Нет результатов');
+    this.healthRows=E('div',{'class':'ob-health-list'});
+    this.healthNote=E('span',{'class':'ob-help'},'Запустите проверку в диагностике.');
+    this.diagnosticDetails=E('div',{'class':'ob-diagnostic-details'});
     this.diagnosticMessage = E('p',{'class':'ob-help','aria-live':'polite'},'Проверка использует сохранённые настройки.');
     this.diagnosticButton = E('button',{type:'button','class':'cbi-button ob-button ob-primary',click:ui.createHandlerFn(this,function(){return self.runDiagnostics();})},'Проверить работоспособность');
     this.logText = E('pre',{'class':'ob-log','aria-label':'Журнал Обхода'},'Журнал пока пуст.');
@@ -193,7 +211,7 @@ return view.extend({
     [ ['Регион', ['russia_inside', 'russia_outside', 'ukraine_inside']],
       ['Сервисы', ['youtube', 'discord', 'meta', 'twitter', 'telegram', 'google_ai', 'google_meet', 'google_play', 'tiktok', 'hdrezka', 'roblox', 'hodca']],
       ['Категории', ['geoblock', 'block', 'anime', 'news', 'porn']],
-      ['Сети', ['cloudflare', 'hetzner', 'ovh', 'digitalocean', 'cloudfront']] ].forEach(function(group, index) {
+      ['Сети', ['cloudflare', 'hetzner', 'ovh', 'digitalocean', 'cloudfront']] ].forEach(function(group) {
       var choices = E('div', { 'class': 'ob-preset-grid' });
       group[1].forEach(function(id) {
         var input = checkbox(self.profile.routing.presetIds.includes(id), function() { self.updatePresets(id); });
@@ -205,13 +223,17 @@ return view.extend({
       var section = E('details', { 'class': 'ob-preset-group' }, [E('summary', {}, [
         E('span', {}, group[0]), counter
       ]), choices]);
-      section.open = index < 2;
       presets.appendChild(section);
     });
     this.presetCount = E('span', { 'class': 'ob-counter' });
     this.autoFields = E('div', { 'class': 'ob-grid ob-auto-fields' }, [field('Частота проверки', this.interval), field('Стабильность выбора', this.tolerance)]);
     this.summaryServers = E('strong'); this.summaryRules = E('strong'); this.summaryCore = E('strong');
     this.routeSummary = E('p', { 'class': 'ob-route-name' });
+    this.routeMode=E('span',{'class':'ob-counter ob-badge-green'});
+    this.routeChecked=E('span',{'class':'ob-help'});
+    this.installedCore=E('span');this.installedFlavor=E('span');this.installedState=E('span');
+    this.coreBadge=E('span',{'class':'ob-counter'});
+    this.downloadSize=E('span');this.installedSize=E('span');
     this.setup = E('div', { 'class': 'ob-setup' });
     this.dirtyState = E('span', { 'class': 'ob-help', 'aria-live': 'polite' }, 'Все изменения сохранены');
     this.dirty = false;
@@ -225,9 +247,10 @@ return view.extend({
     this.tabs = {}; this.panels = {};
     var nav = E('div', { 'class': 'ob-tabs', role: 'tablist', 'aria-label': 'Разделы Обхода' });
     var panels = E('div', { 'class': 'ob-panels' });
-    var definitions = [ ['overview', 'Обзор'], ['connections', 'Подключения'], ['rules', 'Правила'], ['protocols', 'Протоколы'], ['network', 'Сеть'], ['diagnostics', 'Диагностика'] ];
+    var definitions = [ ['overview', 'Обзор', 'Состояние маршрутизации и быстрые действия.'], ['connections', 'Подключения', 'Маршруты, серверы и автоматическое переключение.'], ['rules', 'Правила', 'Собственные домены, готовые и внешние списки.'], ['protocols', 'Протоколы', 'Выбор и управление совместимым ядром.'], ['network', 'Сеть', 'Интерфейсы LAN, DNS и дополнительные параметры.'], ['diagnostics', 'Диагностика', 'Проверки работоспособности и журнал службы.'] ];
+    this.tabDefinitions=definitions;
     definitions.forEach(function(entry, index) {
-      self.tabs[entry[0]] = E('button', { type: 'button', role: 'tab', id: 'obhod-tab-' + entry[0], 'aria-controls': 'obhod-panel-' + entry[0],
+      self.tabs[entry[0]] = E('button', { type: 'button', 'class':'ob-tab', role: 'tab', id: 'obhod-tab-' + entry[0], 'aria-controls': 'obhod-panel-' + entry[0],
         click: function() { self.selectTab(entry[0]); }, keydown: function(event) {
           var next = index;
           if (event.key === 'ArrowRight') next = (index + 1) % definitions.length;
@@ -241,20 +264,24 @@ return view.extend({
       self.panels[entry[0]] = E('div', { 'class': 'ob-panel', role: 'tabpanel', id: 'obhod-panel-' + entry[0], 'aria-labelledby': 'obhod-tab-' + entry[0] });
       panels.appendChild(self.panels[entry[0]]);
     });
-    function jump(tab, title) { return E('button', { type: 'button', 'class': 'ob-text-button', click: function() { self.selectTab(tab); } }, title + ' →'); }
-    this.panels.overview.appendChild(card('Маршрутизация', 'Только выбранные сайты и подсети идут через Обход. Остальной трафик — напрямую.', [
-      E('div', { 'class': 'ob-route-overview' }, [E('span', { 'class': 'ob-eyebrow' }, 'Активный сервер'),
-        E('div', { 'class': 'ob-route-active' }, [this.overviewLiveRoute, this.overviewLiveDelay]), this.routeSummary]),
-      E('div', { 'class': 'ob-inline-actions' }, [jump('connections', 'Подключения'), jump('rules', 'Правила')]) ]));
+    function jump(tab, title) { return E('button', { type: 'button', 'class': 'cbi-button ob-button ob-button-sm', click: function() { self.selectTab(tab); } }, title + ' →'); }
+    function kv(title,value){return E('div',{'class':'ob-kv'},[E('span',{},title),value]);}
+    this.panels.overview.appendChild(E('div',{'class':'ob-columns'},[
+      card('Активный маршрут','',[
+        E('div',{'class':'ob-route-line'},[E('span',{'class':'ob-route-icon'},routeIcon()),
+          E('div',{'class':'ob-route-info'},[this.overviewLiveRoute,this.routeSummary]),this.overviewLiveDelay]),
+        E('div',{'class':'ob-inline-footer'},[this.routeChecked,jump('connections','Подключения')])],this.routeMode),
+      card('Состояние системы','',[this.healthRows,
+        E('div',{'class':'ob-inline-footer'},[this.healthNote,jump('diagnostics','Диагностика')])],this.healthBadge)]));
     var stats = E('div', { 'class': 'ob-stats' });
-    [['connections', 'Подключения', this.summaryServers], ['rules', 'Готовые списки', this.summaryRules], ['protocols', 'Ядро протоколов', this.summaryCore]].forEach(function(item) {
+    [['connections', 'Серверы в группе', this.summaryServers], ['rules', 'Активные списки', this.summaryRules], ['protocols', 'Ядро sing-box', this.summaryCore]].forEach(function(item) {
       stats.appendChild(E('button', { type: 'button', 'class': 'ob-stat', click: function() { self.selectTab(item[0]); } }, [E('span', { 'class': 'ob-help' }, item[1]), item[2], E('span', { 'class': 'ob-stat-arrow', 'aria-hidden': 'true' }, '↗')]));
     });
     this.panels.overview.appendChild(stats); this.panels.overview.appendChild(this.setup);
     this.updateDetails = E('details', { 'class': 'ob-card ob-update-details' }, [
       E('summary', {}, [E('span', { 'class': 'ob-update-summary-main' }, [
-        E('strong', {}, 'Обновления Обхода'), this.updateSummaryMessage
-      ]), E('span', { 'class': 'ob-update-summary-meta' }, [this.updateBadge, this.updateVersion])]),
+        E('strong', {}, 'Обновления'), this.updateVersion, this.updateSummaryMessage
+      ]), E('span', { 'class': 'ob-update-summary-meta' }, [this.updateBadge])]),
       E('div', { 'class': 'ob-update-body' }, [this.updateMessage,
         E('div', { 'class': 'ob-inline-actions' }, [this.updateCheck, this.updateInstall, this.updateReload]),
         E('p', { 'class': 'ob-help' }, 'Подключения и списки сохранятся. Во время обновления служба кратковременно перезапустится, если была включена.')])
@@ -265,48 +292,66 @@ return view.extend({
       E('div', { 'class': 'ob-inline-actions' }, [E('button', { type: 'button', 'class': 'cbi-button ob-button ob-primary', click: ui.createHandlerFn(this, this.importConnections) }, 'Добавить подключения'), E('span', { 'class': 'ob-help' }, 'URL подписки не сохраняется.')]) ])]);
     this.importDetails.open = this.profile.tunnels.length === 0;
     this.importDetails.appendChild(E('p',{'class':'ob-import-hint ob-help'},'Подписка: HTTP(S)-URL, список vless://, ss:// и других ссылок или Base64. WireGuard: полный текст .conf с [Interface] и [Peer].'));
+    this.importToggle=E('button',{type:'button','class':'cbi-button ob-button ob-primary','aria-expanded':String(this.importDetails.open),'aria-controls':'obhod-import',click:function(){self.importDetails.open=!self.importDetails.open;}},'+ Добавить подключение');
+    this.importDetails.id='obhod-import';
+    this.importDetails.addEventListener('toggle',function(){self.importToggle.setAttribute('aria-expanded',String(self.importDetails.open));});
+    this.panels.connections.appendChild(E('div',{'class':'ob-section-toolbar'},[
+      E('div',{},[E('h3',{},'Маршруты и серверы'),E('p',{'class':'ob-help'},'Управляйте группой автовыбора и основным подключением.')]),this.importToggle]));
     this.panels.connections.appendChild(this.importDetails);
     var connectionGrid = E('div', { 'class': 'ob-connections-grid' });
     connectionGrid.appendChild(card('Выбор маршрута', '', [field('Основное подключение', this.active),
       switchField('Автоматический выбор', this.group, 'Все выбранные туннели используют общие правила. Обход переключится на рабочее соединение.'), this.autoFields,
       field('URL проверки соединений',this.testUrl,'Обычно адрес с ответом HTTP 204. Не все сайты доступны с каждого VPN-адреса.') ]));
-    connectionGrid.appendChild(card('Серверы', 'Для автоматического выбора отметьте минимум два подключения.', [
-      E('div', { 'class': 'ob-list-toolbar' }, [E('label', { 'class': 'ob-check-label' }, [this.all, E('span', {}, 'Выбрать все')]), this.count, this.tunnelTotal]),
-      this.serverSearch, this.list, this.serverEmpty]));
+    connectionGrid.appendChild(card('Подключения', 'Для автоматического выбора отметьте минимум два подключения.', [
+      E('div', { 'class': 'ob-list-toolbar' }, [E('div',{'class':'ob-inline-actions'},[this.serverFilterAll,this.serverFilterSelected]),E('label', { 'class': 'ob-check-label' }, [this.all, E('span', {}, 'Выбрать все')])]),
+      E('div',{'class':'ob-search'},this.serverSearch), this.list, this.serverEmpty,
+      E('div',{'class':'ob-inline-footer'},[this.serverVisible,E('span',{'class':'ob-help'},'Изменения применяются после сохранения')])],this.count));
     this.panels.connections.appendChild(connectionGrid);
-    this.panels.rules.appendChild(card('Свои сайты и подсети', 'Общие правила для всех туннелей.', [this.buildDomainEditor(),
-      E('details',{'class':'ob-details'},[E('summary',{},'IP и подсети'),field('IP и подсети',this.cidrText,'Например, 203.0.113.0/24.')])]));
-    this.panels.rules.appendChild(card('Готовые списки', 'Выберите сервисы и категории для маршрутизации.', [this.presetCount, presets,
+    var domainEditor=this.buildDomainEditor();
+    this.domainCard=card('Свои сайты и подсети', 'Ваши сайты и подсети, направляемые через туннель. Общие правила для всех подключений.', [domainEditor],this.domainCount);
+    this.domainCard.classList.add('ob-domain-card');this.panels.rules.appendChild(this.domainCard);
+    this.panels.rules.appendChild(card('Готовые списки', 'Выберите сервисы и категории для маршрутизации.', [presets,
       E('p', { 'class': 'ob-note ob-note-compact' }, 'Можно выбрать один регион. Несовместимые списки отключаются автоматически.'),
-      field('Обновлять списки',this.listInterval),switchField('Скачивать списки через туннель',this.downloadLists,'Использовать выбранное соединение для загрузки внешних наборов.') ]));
-    this.panels.rules.appendChild(card('Внешние списки', 'Бинарный .srs или source .json в формате sing-box.', [field('Ссылки на списки', this.remoteText, 'HTTPS-ссылки на .srs или .json, по одной в строке. Домены из обычного текста вставляйте в «Домены и сайты».'),
-      E('details',{'class':'ob-details'},[E('summary',{},'Примеры форматов'),E('pre',{'class':'ob-code'},'Домены: example.org\nПодсети: 203.0.113.0/24\nВнешний список: https://example.org/rules.srs\nSource JSON: {"version":3,"rules":[{"domain_suffix":["example.org"]}]}')]) ]));
-    this.panels.protocols.appendChild(card('Ядро протоколов', 'Выберите, какие подключения будут доступны на роутере.', [this.coreState,
-      field('Набор протоколов', this.protocols), field('Версия ядра',this.coreVersion),this.coreVersionHelp,this.protocolHelp,
-      E('div',{'class':'ob-inline-actions'},[this.coreButton,this.removeCoreButton]), this.coreHint,
-      E('details', { 'class': 'ob-details' }, [E('summary', {}, 'О размере установки'), E('p', { 'class': 'ob-help' }, 'Прокси используют sing-box-tiny, WireGuard — полный sing-box. На поддерживаемых MIPS/ARM64 автоматически устанавливается совместимое ядро Обхода с исправлением таблиц маршрутизации и встроенными DNS-группами. Протоколы входят в общее ядро: выбор одного не уменьшает его дальше. Перед установкой проверяется место; малый объём ОЗУ вызывает предупреждение.')]) ]));
-    this.panels.network.appendChild(card('Локальная сеть', 'Выберите входящие LAN/guest-интерфейсы. WAN обычно добавлять не нужно.', [field('Интерфейсы роутера',this.interfaceSelect),field('Выбранные устройства / ручной ввод', this.interfaces, 'Обычно br-lan. Несколько имён укажите через запятую.')]));
+      E('div',{'class':'ob-grid ob-list-settings'},[field('Обновлять списки',this.listInterval),switchField('Скачивать списки через туннель',this.downloadLists,'Использовать выбранное соединение для загрузки внешних наборов.')]) ],this.presetCount));
+    this.remoteDetails=E('details',{'class':'ob-accordion'},[E('summary',{},['Внешние списки',E('span',{'class':'ob-help'},'Дополнительные правила .srs / .json')]),
+      E('div',{'class':'ob-accordion-body'},[field('Ссылки на списки', this.remoteText, 'HTTPS-ссылки на .srs или .json, по одной в строке.'),
+      E('details',{'class':'ob-details'},[E('summary',{},'Примеры форматов'),E('pre',{'class':'ob-code'},'Домены: example.org\nПодсети: 203.0.113.0/24\nВнешний список: https://example.org/rules.srs\nSource JSON: {"version":3,"rules":[{"domain_suffix":["example.org"]}]}')])])]);
+    this.panels.rules.appendChild(this.remoteDetails);
+    var protocolGrid=E('div',{'class':'ob-columns'});
+    protocolGrid.appendChild(card('Ядро протоколов', '', [
+      kv('Ядро',this.installedCore),kv('Набор',this.installedFlavor),kv('Состояние',this.installedState),
+      field('Набор протоколов', this.protocols), field('Версия ядра',this.coreVersion),this.coreVersionHelp,
+      E('div',{'class':'ob-inline-actions'},[this.coreButton]), this.coreHint],this.coreBadge));
+    protocolGrid.appendChild(card('Информация об установке','',[
+      this.coreState,kv('Скачивание',this.downloadSize),kv('После распаковки',this.installedSize),
+      E('details', { 'class': 'ob-details' }, [E('summary', {}, 'Технические подробности и совместимость'),this.protocolHelp, E('p', { 'class': 'ob-help' }, 'Прокси используют sing-box-tiny, WireGuard — полный sing-box. На поддерживаемых MIPS/ARM64 автоматически устанавливается совместимое ядро Обхода с исправлением таблиц маршрутизации и встроенными DNS-группами. Протоколы входят в общее ядро: выбор одного не уменьшает его дальше. Перед установкой проверяется место; малый объём ОЗУ вызывает предупреждение.')]),
+      E('div',{'class':'ob-inline-footer'},[E('span',{'class':'ob-help'},'Опасное действие'),this.removeCoreButton])]));
+    this.panels.protocols.appendChild(protocolGrid);
+    var networkGrid=E('div',{'class':'ob-columns ob-network-grid'});
+    networkGrid.appendChild(card('Локальная сеть', 'Трафик каких интерфейсов нужно обрабатывать. WAN обычно добавлять не нужно.', [field('Добавить интерфейс',this.interfaceSelect),field('Выбранные устройства / ручной ввод', this.interfaces, 'Обычно br-lan. Несколько имён укажите через запятую.')]));
     this.dnsSingleFields = E('div',{'class':'ob-grid'},[field('Провайдер',this.dnsPreset),field('Протокол',this.dnsProtocol),field('DNS-сервер',this.dnsServer),field('Bootstrap IPv4',this.dnsBootstrap),this.dnsPathField]);
     this.dnsPoolFields = E('div',{},[field('DNS-серверы группы',this.dnsUpstreams,'От двух до четырёх серверов, по одному в строке: IP, udp://, tcp://, tls:// или https:// с путём DoH.'),
       E('p',{'class':'ob-note'},'В параллельном режиме запрос получают все серверы, возвращается первый ответ. Выбирайте серверы с одинаковой фильтрацией.'),
       field('Bootstrap DNS',this.dnsBootstrapServers,'До четырёх IP-адресов, по одному в строке. Разрешают имена DNS-серверов, серверов туннелей и узлов загрузки списков. При нескольких адресах используется тот же режим опроса.'),this.dnsPrepareButton,this.dnsPrepareHint]);
     this.dnsSettings = E('div',{'class':'ob-dns-settings'},[field('Режим опроса DNS',this.dnsPoolMode),this.dnsSingleFields,this.dnsPoolFields]);
     this.dnsTtlField = field('TTL выбранных доменов, секунд',this.dnsTtl,'Обычно 60. После перезагрузки роутера старые служебные адреса в кэше устройств должны истечь.');
-    this.panels.network.appendChild(card(this.dnsHeading, 'Роутер отвечает на DNS-запросы устройств локальной сети.', [this.dnsHint,switchField(this.dnsSwitchCaption,this.dnsEnabled,this.dnsSwitchHelp),
+    networkGrid.appendChild(card(this.dnsHeading, 'Роутер отвечает на DNS-запросы устройств локальной сети.', [E('details',{'class':'ob-details ob-dns-explanation'},[E('summary',{},'Как работает DNS и FakeIP'),this.dnsHint]),switchField(this.dnsSwitchCaption,this.dnsEnabled,this.dnsSwitchHelp),
       this.dnsSettings,this.dnsTtlField,
       E('p',{'class':'ob-help ob-dns-hint'},'После изменения сохраните настройки. DNS и HTTPS-маршрут можно проверить в «Диагностике».')]));
-    this.panels.network.appendChild(card('DNS и IPv6', '', [
+    this.panels.network.appendChild(networkGrid);
+    this.panels.network.appendChild(E('details',{'class':'ob-accordion'},[E('summary',{},'Дополнительные параметры сети'),E('div',{'class':'ob-accordion-body'},[
       switchField('Настраивать DNS автоматически', this.manageDns, 'При выключении Обход вернёт прежние DNS-серверы. Поддерживается один экземпляр dnsmasq.'),
       switchField('Перехватывать IPv6', this.ipv6, 'Включайте, если IPv6 используется в вашей сети.'),
       switchField('Отключить QUIC',this.disableQuic,'Отклонять UDP на порту 443, чтобы браузеры использовали TCP. На работу самого туннеля не влияет.'),
-      E('details', { 'class': 'ob-details' }, [E('summary', {}, 'Ручная настройка DNS'), E('p', { 'class': 'ob-help' }, 'При выключенной автоматической настройке укажите upstream dnsmasq: 127.0.0.1#1053. Для FakeIP отключите кэш dnsmasq (cachesize=0). Устройства должны использовать DNS этого роутера.')]) ]));
-    this.panels.diagnostics.appendChild(card('Проверка службы', 'Конфигурация, LAN, перехват, DNS и реальный HTTPS-запрос через выбранный сервер.', [this.diagnosticButton,this.diagnosticMessage,this.diagnosticRows]));
-    this.logDetails = E('details',{'class':'ob-log-details'},[E('summary',{},'Просмотреть журнал'),
-      E('div',{'class':'ob-log-body'},[E('div',{'class':'ob-inline-actions'},[E('button',{type:'button','class':'cbi-button ob-button',click:ui.createHandlerFn(this,function(){return self.refreshLogs();})},'Обновить'),E('button',{type:'button','class':'cbi-button ob-button',click:ui.createHandlerFn(this,function(){return clearLogs().then(function(){return self.refreshLogs();});})},'Очистить')]),this.logText])]);
+      E('details', { 'class': 'ob-details' }, [E('summary', {}, 'Ручная настройка DNS'), E('p', { 'class': 'ob-help' }, 'При выключенной автоматической настройке укажите upstream dnsmasq: 127.0.0.1#1053. Для FakeIP отключите кэш dnsmasq (cachesize=0). Устройства должны использовать DNS этого роутера.')]) ])]));
+    this.panels.diagnostics.appendChild(E('div',{'class':'ob-columns'},[
+      card('Проверка службы','Конфигурация, LAN, перехват, DNS и HTTPS через выбранный сервер.',[
+        this.diagnosticRows,E('div',{'class':'ob-inline-footer'},[this.diagnosticMessage,this.diagnosticButton])],this.diagnosticSummary),
+      card('Подробности','',[this.diagnosticDetails,E('p',{'class':'ob-note'},'Проверки используют сохранённые настройки. Ошибки показываются с пояснением; секреты скрываются.')])]));
+    this.logDetails = E('details',{'class':'ob-accordion ob-log-details'},[E('summary',{},['Журнал службы',E('span',{'class':'ob-help'},'До 32 КБ в ОЗУ · без записи во flash')]),
+      E('div',{'class':'ob-log-body ob-accordion-body'},[switchField('Подробный журнал',this.verboseLogs,'По умолчанию сохраняются только предупреждения и ошибки.'),E('div',{'class':'ob-inline-actions'},[E('button',{type:'button','class':'cbi-button ob-button',click:ui.createHandlerFn(this,function(){return self.refreshLogs();})},'Обновить'),E('button',{type:'button','class':'cbi-button ob-button',click:ui.createHandlerFn(this,function(){return clearLogs().then(function(){return self.refreshLogs();});})},'Очистить')]),this.logText])]);
     this.logDetails.addEventListener('toggle', function() { if (self.logDetails.open) self.refreshLogs(); });
-    this.panels.diagnostics.appendChild(card('Журнал службы', 'До 32 КБ в ОЗУ, без записи во flash, секреты скрываются. После перезагрузки журнал очищается.', [
-      switchField('Подробный журнал',this.verboseLogs,'По умолчанию сохраняются только предупреждения и ошибки.'),
-      this.logDetails ]));
+    this.panels.diagnostics.appendChild(this.logDetails);
     this.serviceButton = E('button', { type: 'button', 'class': 'cbi-button ob-button ob-service-button', click: ui.createHandlerFn(this, this.toggleService) }, 'Включить');
     this.restartButton = E('button', { type:'button', 'class':'cbi-button ob-button', click:ui.createHandlerFn(this,this.restartService) }, 'Перезапустить');
     this.applyButton = E('button', { type: 'button', 'class': 'cbi-button ob-button ob-primary', click: ui.createHandlerFn(this, function() { return self.save(true); }) }, 'Сохранить и включить');
@@ -316,17 +361,20 @@ return view.extend({
     this.operationNotice=E('div',{'class':'ob-operation-notice',role:'status','aria-live':'polite'},[this.operationTitle,this.operationMessage]);
     this.footer = E('footer', { 'class': 'ob-footer' }, [this.dirtyState, E('div', { 'class': 'ob-footer-actions' }, [
       this.cancelButton,this.saveButton,this.applyButton])]);
+    this.breadcrumb=E('span');this.pageTitle=E('h2',{'class':'ob-page-title'});this.pageIntro=E('p',{'class':'ob-page-intro'});
+    this.themeButton=E('button',{type:'button','class':'cbi-button ob-button ob-theme-button','aria-label':'Переключить тему',title:'Переключить тему',click:function(){self.setTheme(!self.root.classList.contains('ob-dark'));}},'☼');
     this.root = E('div', { 'class': 'cbi-map obhod-app' }, [E('link', { rel: 'stylesheet', href: L.resource('obhod/overview.css') }),
-      E('header', { 'class': 'ob-header' }, [E('div', { 'class': 'ob-brand' }, [E('span', { 'class': 'ob-mark', 'aria-hidden': 'true' }, '↗'),
-        E('div', {}, [E('h2', {}, 'Обход'), E('p', { 'class': 'ob-help' }, 'Ваш маршрут к нужным сайтам')])]),
-        E('div', { 'class': 'ob-header-status' }, [this.state, this.statusDetail, this.routeDetail, E('div',{'class':'ob-service-actions'},[this.restartButton,this.serviceButton])])]),
-      this.operationNotice,nav, panels, this.footer ]);
-    function changed(event) { if (![self.serverSearch,self.domainSearch,self.domainEntry].includes(event.target) && !self.panels.protocols.contains(event.target)) self.markDirty(); }
+      E('header', { 'class': 'ob-header' }, [E('div', { 'class': 'ob-brand' }, [E('span', { 'class': 'ob-mark', 'aria-hidden': 'true' }, routeIcon()),
+        E('div', {}, [E('strong', {'class':'ob-brand-title'}, 'Обход'), E('p', { 'class': 'ob-help' }, 'OpenWrt · Панель управления')])]),
+        E('div', { 'class': 'ob-header-status' }, [this.routeDetail,this.state,this.restartButton,this.serviceButton,this.themeButton])]),
+      E('div',{'class':'ob-page-top'},[E('div',{},[E('p',{'class':'ob-eyebrow'},['Обход / ',this.breadcrumb]),this.pageTitle,this.pageIntro]),this.statusDetail]),
+      this.operationNotice,nav, panels, this.footer,E('p',{'class':'ob-footer-note'},'Обход · выборочная маршрутизация для OpenWrt') ]);
+    function changed(event) { if (![self.serverSearch,self.domainSearch,self.domainEntry,self.domainPageSelect].includes(event.target) && !self.panels.protocols.contains(event.target)) self.markDirty(); }
     this.root.addEventListener('input',changed);this.root.addEventListener('change',changed);
     var background = getComputedStyle(document.body).backgroundColor.match(/[\d.]+/g);
     if (background && Number(background[3] === undefined ? 1 : background[3]) > 0) {
-      this.root.classList.toggle('ob-dark', (Number(background[0]) * 299 + Number(background[1]) * 587 + Number(background[2]) * 114) / 1000 < 128);
-    } else this.root.classList.toggle('ob-dark', window.matchMedia('(prefers-color-scheme: dark)').matches);
+      this.setTheme((Number(background[0]) * 299 + Number(background[1]) * 587 + Number(background[2]) * 114) / 1000 < 128);
+    } else this.setTheme(window.matchMedia('(prefers-color-scheme: dark)').matches);
     this.renderTunnels();
     this.updatePresets(); this.updateCoreVersions(); this.updateProtocolHelp(); this.updateDnsFields(); this.selectTab('overview');
     this.updateStatus(data[0]);
@@ -345,14 +393,21 @@ return view.extend({
     this.serviceButton.disabled = !!(value.coreBusy || value.updateBusy || value.jobBusy || (!value.running && !value.enabled && (!value.configured || !value.version)));
     this.serviceButton.title = !value.configured ? 'Сначала сохраните подключение.' : 'Включение использует сохранённые настройки.';
     this.statusDetail.textContent = value.error || (value.jobBusy ? value.jobMessage : '') || value.version || 'Сначала установите ядро протоколов';
+    this.statusDetail.classList.toggle('is-error',!!value.error);
     var telemetry = this.routeTelemetry(value, Date.now()/1000);
     this.liveRoute.textContent = !value.running ? 'Маршрут неактивен' : value.routeName || 'Проверяем маршрут…';
     this.liveDelay.textContent = value.running ? telemetry.label : '';
     this.overviewLiveRoute.textContent = this.liveRoute.textContent;
     this.overviewLiveDelay.textContent = this.liveDelay.textContent;
     this.routeDetail.title = telemetry.title;
+    this.routeChecked.textContent=value.running?telemetry.title:'Маршрут неактивен';
     this.coreState.textContent = (value.coreFlavor || (value.version ? 'Своё ядро sing-box' : 'Ядро не установлено')) + (value.version?' · '+value.version.replace(/^sing-box version /,''):'')
       + (value.coreMessage ? ' · ' + value.coreMessage : '');
+    this.installedCore.textContent=value.version || 'Не установлено';
+    this.installedFlavor.textContent=value.coreFlavor==='sing-box-tiny'?'Облегчённый · прокси':value.coreFlavor==='sing-box'?'Полный · прокси и WireGuard':value.coreFlavor || 'Своё ядро';
+    this.installedState.textContent=value.coreBusy?value.coreMessage || 'Установка…':value.version?'Установлено':'Требуется установка';
+    this.coreBadge.textContent=value.coreBusy?'Операция…':value.version?'Установлено':'Не установлено';
+    this.coreBadge.classList.toggle('ob-badge-green',!!value.version && !value.coreBusy);
     var busy=!!(value.coreBusy || value.updateBusy || value.jobBusy);
     this.coreButton.disabled = !!(value.running || value.enabled || busy || this.coreCatalog.unavailable);
     this.removeCoreButton.disabled=!!(value.running || value.enabled || busy || !value.coreFlavor);
@@ -367,6 +422,13 @@ return view.extend({
     this.updateControls();
     this.diagnosticButton.disabled = !!(value.coreBusy || value.updateBusy || value.jobBusy);
     this.diagnosticMessage.textContent = value.jobMessage || 'Проверка использует сохранённые настройки.';
+    this.renderHealth();
+  },
+
+  setTheme: function(dark) {
+    this.root.classList.toggle('ob-dark',dark);
+    this.themeButton.textContent=dark?'☼':'☾';
+    this.themeButton.setAttribute('aria-label',dark?'Включить светлую тему':'Включить тёмную тему');
   },
 
   routeTelemetry: function(value, now) {
@@ -425,6 +487,7 @@ return view.extend({
     this.applyButton.title=busy?this.busyReason():'';
     if(busy)this.serviceButton.title=this.busyReason();
     this.cancelButton.hidden = !this.dirty;this.cancelButton.disabled=false;
+    this.footer.hidden=!this.dirty;
   },
 
   busyReason: function() {
@@ -450,7 +513,10 @@ return view.extend({
       self.tabs[key].setAttribute('aria-selected', String(key === id));
       self.tabs[key].tabIndex = key === id ? 0 : -1;
       self.panels[key].hidden = key !== id;
+      self.panels[key].classList.toggle('active',key===id);
     });
+    var definition=this.tabDefinitions.find(function(entry){return entry[0]===id;});
+    this.pageTitle.textContent=definition[1];this.breadcrumb.textContent=definition[1];this.pageIntro.textContent=definition[2];
     if (id === 'diagnostics') this.refreshDiagnostics();
   },
 
@@ -497,12 +563,39 @@ return view.extend({
     if(this.diagnosticsLoading) return this.diagnosticsPromise;
     this.diagnosticsLoading=true;
     this.diagnosticsPromise=diagnostics().then(function(result){
+      self.lastDiagnostics=result;
       self.diagnosticRows.replaceChildren();
-      (result.checks || []).forEach(function(check){ self.diagnosticRows.appendChild(E('div',{'class':'ob-diagnostic-row '+(check.ok?'is-ok':'is-fail')},[
-        E('strong',{},check.name),E('span',{'class':check.ok?'ob-check-ok':'ob-check-fail'},check.ok?'✓ Готово':'✕ Требует внимания'),E('p',{'class':'ob-help'},check.message)])); });
+      self.diagnosticDetails.replaceChildren();
+      var checks=result.checks || [], passed=checks.filter(function(check){return check.ok;}).length;
+      self.diagnosticSummary.textContent=checks.length?passed+' из '+checks.length+' пройдено':'Нет результатов';
+      self.diagnosticSummary.classList.toggle('ob-badge-green',checks.length>0 && passed===checks.length);
+      checks.forEach(function(check){
+        var title=[E('strong',{},check.name),E('span',{'class':check.ok?'ob-check-ok':'ob-check-fail'},check.ok?'✓':'✕')];
+        self.diagnosticRows.appendChild(check.ok
+          ?E('details',{'class':'ob-diagnostic-row is-ok'},[E('summary',{},title),E('p',{'class':'ob-help'},check.message)])
+          :E('div',{'class':'ob-diagnostic-row is-fail'},title.concat([E('p',{'class':'ob-help'},check.message)])));
+        self.diagnosticDetails.appendChild(E('div',{'class':'ob-kv'},[E('span',{},check.name),E('span',{},check.message)]));
+      });
+      if(!checks.length)self.diagnosticRows.appendChild(E('p',{'class':'ob-help'},'Проверка ещё не выполнена.'));
       if(result.note) self.diagnosticRows.appendChild(E('p',{'class':'ob-note'},result.note));
+      self.renderHealth();
     }).catch(function(){self.diagnosticMessage.textContent='Не удалось прочитать диагностику. Повторите запрос.';}).finally(function(){self.diagnosticsLoading=false;});
     return this.diagnosticsPromise;
+  },
+
+  renderHealth: function() {
+    var state=this.lastStatus || {}, result=this.lastDiagnostics, checks=result && result.checks || [];
+    this.healthRows.replaceChildren();
+    this.healthRows.appendChild(E('div',{'class':'ob-health-item'},[
+      E('span',{'class':state.running?'ob-check-ok':'ob-help'},state.running?'✓':'○'),E('span',{},state.running?'Служба активна':'Служба выключена')]));
+    var relevant=checks.filter(function(check){return /DNS|Перехват|HTTPS/i.test(check.name);}).slice(0,3);
+    if(!relevant.length)relevant=[{name:'DNS роутера'},{name:'Перехват трафика'},{name:'HTTPS через подключение'}];
+    relevant.forEach(function(check){this.healthRows.appendChild(E('div',{'class':'ob-health-item'},[
+      E('span',{'class':check.ok===true?'ob-check-ok':check.ok===false?'ob-check-fail':'ob-help'},check.ok===true?'✓':check.ok===false?'✕':'○'),E('span',{},check.name)]));},this);
+    var failed=checks.some(function(check){return !check.ok;});
+    this.healthBadge.textContent=!state.running?'Служба выключена':!checks.length?'Нет результатов':failed?'Требует внимания':'Проверки пройдены';
+    this.healthBadge.classList.toggle('ob-badge-green',!!state.running && checks.length>0 && !failed);
+    this.healthNote.textContent=checks.length?(result.checkedAt?'Последняя диагностика: '+new Date(result.checkedAt*1000).toLocaleString('ru-RU'):'Результаты последней диагностики'):'DNS и HTTPS ещё не проверены. Откройте диагностику.';
   },
 
   refreshLogs: function() {
@@ -526,31 +619,43 @@ return view.extend({
   buildDomainEditor: function() {
     var self=this;
     this.domainPage=0;
-    this.domainCount=E('p',{'class':'ob-counter','aria-live':'polite'});
-    this.domainSearch=E('input',{type:'search',placeholder:'Найти домен…','aria-label':'Поиск своих доменов',input:function(){self.domainPage=0;self.renderDomains();}});
-    this.domainClear=E('button',{type:'button','class':'cbi-button ob-button',click:function(){self.domainSearch.value='';self.domainPage=0;self.renderDomains();self.domainSearch.focus();}},'Очистить');
+    this.domainCollator=new Intl.Collator('ru',{numeric:true,sensitivity:'base'});
+    this.domainCount=E('span',{'class':'ob-counter','aria-live':'polite'});
+    this.domainResults=E('span',{'aria-live':'polite'});
+    this.domainSearch=E('input',{type:'search',placeholder:'Поиск среди всех доменов…','aria-label':'Поиск своих доменов',input:function(){self.domainPage=0;self.renderDomains();}});
+    this.domainClear=E('button',{type:'button','class':'ob-search-clear','aria-label':'Очистить поиск доменов',title:'Очистить поиск',click:function(){self.domainSearch.value='';self.domainPage=0;self.renderDomains();self.domainSearch.focus();}},'×');
     this.domainEntry=E('input',{type:'text',placeholder:'example.org или https://example.org','aria-label':'Добавить домен или URL',keydown:function(event){if(event.key==='Enter'){event.preventDefault();self.addDomain();}}});
-    this.domainRows=E('div',{'class':'ob-domain-rows'});
+    this.domainRows=E('div',{'class':'ob-domain-rows','aria-label':'Пользовательские домены'});
     this.domainError=E('p',{'class':'ob-help ob-domain-error','aria-live':'polite'});
     this.domainNotice=E('p',{'class':'ob-help',role:'status'});
-    this.domainUndo=E('button',{type:'button','class':'cbi-button ob-button',click:function(){self.undoDomainDeletion();}},'Отменить последнее удаление');
+    this.domainUndo=E('button',{type:'button','class':'cbi-button ob-button ob-button-sm',click:function(){self.undoDomainDeletion();}},'Отменить удаление');
+    this.domainUndoText=E('span');
+    this.domainUndoBar=E('div',{'class':'ob-domain-undo',role:'status'},[this.domainUndoText,this.domainUndo]);
     this.domainPager=E('span',{'class':'ob-help'});
-    this.domainPrev=E('button',{type:'button','class':'cbi-button ob-button',click:function(){self.domainPage--;self.renderDomains();}},'Назад');
-    this.domainNext=E('button',{type:'button','class':'cbi-button ob-button',click:function(){self.domainPage++;self.renderDomains();}},'Далее');
+    function pageChanged(){self.renderDomains();if(self.domainCard)self.domainCard.scrollIntoView({block:'start'});}
+    this.domainPrev=E('button',{type:'button','class':'cbi-button ob-button ob-button-sm','aria-label':'Предыдущая страница',click:function(){self.domainPage--;pageChanged();}},'← Назад');
+    this.domainNext=E('button',{type:'button','class':'cbi-button ob-button ob-button-sm','aria-label':'Следующая страница',click:function(){self.domainPage++;pageChanged();}},'Далее →');
+    this.domainPageSelect=E('select',{'aria-label':'Номер страницы доменов',change:function(){self.domainPage=Number(self.domainPageSelect.value);pageChanged();}});
+    this.domainPageTotal=E('span',{'class':'ob-help'});
     // The full list used by save() is independent of both the viewport and the bulk draft.
-    this.domainBulkText=E('textarea',{rows:8,'aria-label':'Полный список доменов',input:function(){self.updateDomainBulkState();}},this.domainText.value);
+    this.domainBulkText=E('textarea',{rows:7,spellcheck:'false','aria-label':'Полный список доменов',input:function(){self.updateDomainBulkState();}},this.domainText.value);
     this.domainBulkBaseline=this.domainBulkText.value;
     this.domainBulkHint=E('p',{'class':'ob-help','aria-live':'polite'});
-    this.domainBulkReplace=E('button',{type:'button','class':'cbi-button ob-button',click:function(){self.replaceDomainList();}},'Заменить полный список доменов');
-    this.domainBulk=E('details',{'class':'ob-details'},[E('summary',{},'Массовое редактирование'),
-      field('Полный список доменов',this.domainBulkText,'Домены или URL, по одному в строке. Кнопка ниже заменяет весь список, независимо от поиска и страницы. Затем сохраните настройки.'),
-      this.domainBulkHint,this.domainBulkReplace]);
+    this.domainBulkReplace=E('button',{type:'button','class':'cbi-button ob-button ob-button-sm',click:function(){self.replaceDomainList();}},'Заменить полный список доменов');
+    this.domainBulk=E('details',{'class':'ob-accordion ob-domain-accordion'},[E('summary',{},'Массовое редактирование'),
+      E('div',{'class':'ob-accordion-body'},[E('p',{'class':'ob-help'},'Полный список независимо от поиска и страницы. Домены или URL, по одному в строке. Замена применяется по кнопке ниже.'),
+        this.domainBulkText,this.domainBulkHint,this.domainBulkReplace])]);
+    this.cidrDetails=E('details',{'class':'ob-accordion ob-domain-accordion'},[E('summary',{},'IP-адреса и подсети'),
+      E('div',{'class':'ob-accordion-body'},[field('IP и подсети',this.cidrText,'Отдельные правила для IP и CIDR. Например, 203.0.113.0/24.')])]);
     this.renderDomains();
-    return E('div',{'class':'ob-domain-editor'},[this.domainCount,
-      E('div',{'class':'ob-domain-toolbar'},[this.domainSearch,this.domainClear]),
-      E('div',{'class':'ob-domain-add'},[this.domainEntry,E('button',{type:'button','class':'cbi-button ob-button',click:function(){self.addDomain();}},'Добавить')]),
-      this.domainError,this.domainNotice,this.domainUndo,this.domainRows,
-      E('nav',{'class':'ob-domain-pages','aria-label':'Страницы доменов'},[this.domainPrev,this.domainPager,this.domainNext]),this.domainBulk]);
+    return E('div',{'class':'ob-domain-editor'},[
+      E('div',{'class':'ob-domain-controls'},[E('div',{'class':'ob-search ob-domain-toolbar'},[this.domainSearch,this.domainClear]),
+        E('div',{'class':'ob-domain-add'},[this.domainEntry,E('button',{type:'button','class':'cbi-button ob-button ob-primary',click:function(){self.addDomain();}},'Добавить')])]),
+      this.domainError,this.domainNotice,
+      E('div',{'class':'ob-domain-results'},[this.domainResults,E('span',{},'Сортировка: А–Я')]),this.domainRows,this.domainUndoBar,
+      E('div',{'class':'ob-domain-pages'},[this.domainPager,E('nav',{'class':'ob-domain-pager','aria-label':'Страницы доменов'},[
+        this.domainPrev,E('span',{'class':'ob-help'},'Страница'),this.domainPageSelect,this.domainPageTotal,this.domainNext])]),
+      E('div',{'class':'ob-domain-panels'},[this.domainBulk,this.cidrDetails])]);
   },
 
   updateDomainBulkState: function() {
@@ -565,7 +670,7 @@ return view.extend({
     try {
       if(this.domainCacheText!==this.domainText.value) {
         this.domainValues=Array.from(new Set(domains(this.domainText.value)));
-        this.domainSorted=this.domainValues.slice().sort();
+        this.domainSorted=this.domainValues.slice().sort(this.domainCollator.compare);
         this.domainCacheText=this.domainText.value;
       }
       values=this.domainSorted;
@@ -576,21 +681,31 @@ return view.extend({
     }
     this.updateDomainBulkState();
     this.domainUndo.hidden=!this.domainDeleted;
+    this.domainUndoBar.hidden=!this.domainDeleted;
+    if(this.domainDeleted)this.domainUndoText.textContent='Удалён '+this.domainDeleted.value;
     var query=this.domainSearch.value.trim().toLowerCase(), filtered=values.filter(function(value){return value.toLowerCase().includes(query);});
     var size=25, pages=Math.max(1,Math.ceil(filtered.length/size));this.domainPage=Math.max(0,Math.min(this.domainPage,pages-1));
-    this.domainCount.textContent=query?'Найдено '+filtered.length+' из '+values.length:'Доменов: '+values.length;
-    this.domainClear.disabled=!this.domainSearch.value;
+    var count=values.length, mod100=count%100, mod10=count%10;
+    this.domainCount.textContent=count.toLocaleString('ru-RU')+' '+(mod100>=11 && mod100<=14?'доменов':mod10===1?'домен':mod10>=2 && mod10<=4?'домена':'доменов');
+    this.domainResults.textContent=query?'Найдено '+filtered.length+' из '+values.length:'Все домены · '+values.length.toLocaleString('ru-RU');
+    this.domainClear.hidden=!this.domainSearch.value;
     filtered.slice(this.domainPage*size,(this.domainPage+1)*size).forEach(function(value){
-      self.domainRows.appendChild(E('div',{'class':'ob-domain-row'},[E('span',{title:value},value),
+      self.domainRows.appendChild(E('div',{'class':'ob-domain-row'},[E('span',{'class':'ob-domain-name',title:value},value),
         E('button',{type:'button','class':'ob-delete','aria-label':'Удалить домен '+value,title:'Удалить',click:function(){
           var current=Array.from(new Set(domains(self.domainText.value))), index=current.indexOf(value);
           if(index<0)return;
           self.domainDeleted={value:value,index:index};current.splice(index,1);
-          self.domainText.value=current.join('\n');self.domainError.textContent='';self.domainNotice.textContent='Удалён домен '+value+'.';self.markDirty();self.renderDomains();
+          self.domainText.value=current.join('\n');self.domainError.textContent='';self.domainNotice.textContent='';self.markDirty();self.renderDomains();
         }},'×')]));
     });
     if(!filtered.length)this.domainRows.appendChild(E('p',{'class':'ob-help ob-domain-empty'},query?'Домены не найдены':'Список пуст. Добавьте домен или раскройте «Массовое редактирование».'));
-    this.domainPager.textContent=(filtered.length?(this.domainPage*size+1)+'–'+Math.min((this.domainPage+1)*size,filtered.length):'0')+' из '+filtered.length+' · Страница '+(this.domainPage+1)+' из '+pages;
+    this.domainPager.textContent=(filtered.length?(this.domainPage*size+1)+'–'+Math.min((this.domainPage+1)*size,filtered.length):'0')+' из '+filtered.length;
+    if(this.domainPageSelect.options.length!==pages){
+      this.domainPageSelect.replaceChildren();
+      for(var page=0;page<pages;page++)this.domainPageSelect.appendChild(E('option',{value:String(page)},String(page+1)));
+    }
+    this.domainPageSelect.value=String(this.domainPage);this.domainPageSelect.disabled=pages===1;
+    this.domainPageTotal.textContent='из '+pages;
     this.domainPrev.disabled=this.domainPage===0;this.domainNext.disabled=this.domainPage>=pages-1;
   },
 
@@ -627,7 +742,7 @@ return view.extend({
 
   captureDraft: function() {
     var self=this;
-    this.domainDeleted=null;this.domainUndo.hidden=true;
+    this.domainDeleted=null;this.domainUndo.hidden=true;this.domainUndoBar.hidden=true;
     this.savedDraft=JSON.parse(JSON.stringify({profile:this.profile,options:this.options}));
     this.savedFields={};
     ['active','group','interval','tolerance','testUrl','listInterval','downloadLists','dnsEnabled','dnsPreset','dnsProtocol','dnsServer','dnsBootstrap','dnsPath','dnsPoolMode','dnsUpstreams','dnsBootstrapServers','dnsTtl','verboseLogs','domainText','cidrText','remoteText','interfaces','manageDns','ipv6','disableQuic'].forEach(function(key){
@@ -668,6 +783,8 @@ return view.extend({
       ?'Для отката на эту сборку нужна прежняя версия приложения. В текущей версии Обхода требуется ядро .4; при запуске оно будет установлено автоматически. Подключения сохранятся.'
       :selected?'Совместимая сборка Обхода для вашего роутера. Скачивание проверяется по SHA-256.':'Будет установлен пакет, доступный в репозитории вашей версии OpenWrt.';
     function mb(bytes){return (bytes/1048576).toLocaleString('ru-RU',{maximumFractionDigits:1});}
+    this.downloadSize.textContent=size?'≈ '+mb(size.downloadBytes)+' МБ':'Нет данных';
+    this.installedSize.textContent=size?'≈ '+mb(size.installedBytes)+' МБ':'Нет данных';
     this.protocolHelp.textContent += size
       ? ' Скачивание ≈ '+mb(size.downloadBytes)+' МБ; после распаковки ≈ '+mb(size.installedBytes)+' МБ. На flash со сжатием размер может быть меньше. Зависимости учитываются при установке.'
       : ' Размер зависит от архитектуры. Обновите списки пакетов в OpenWrt и перезагрузите эту страницу, чтобы увидеть оценку; зависимости проверяются при установке.';
@@ -699,13 +816,15 @@ return view.extend({
     if (!this.summaryServers) return;
     var self = this, state = this.lastStatus || {};
     var count = Object.keys(this.presetInputs).filter(function(id) { return checked(self.presetInputs[id]); }).length;
-    this.summaryServers.textContent = String(this.profile.tunnels.length);
+    var selectedCount=(this.tunnelRows || []).filter(function(row){return checked(row.input);}).length;
+    this.summaryServers.replaceChildren(document.createTextNode(String(selectedCount)),E('small',{},' / '+this.profile.tunnels.length));
     this.summaryRules.textContent = String(count);
     this.summaryCore.textContent = state.coreBusy ? 'Установка…' : state.coreFlavor === 'sing-box-tiny' ? 'Облегчённое' : state.coreFlavor === 'sing-box' ? 'Полное' : state.version ? 'Установлено' : 'Не установлено';
     var active = this.profile.tunnels.find(function(tunnel) { return tunnel.id === self.active.value; });
     this.routeSummary.textContent = !this.profile.tunnels.length ? 'Добавьте первое подключение'
       : checked(this.group) ? 'Автоматический выбор · серверов: ' + this.tunnelRows.filter(function(row) { return checked(row.input); }).length
         : (active ? active.name : 'Выберите основное подключение');
+    this.routeMode.textContent=checked(this.group)?'Автовыбор':'Основной';
     var signature = [!!state.version, this.profile.tunnels.length > 0, count > 0].join(':');
     if (signature !== this.setupSignature) {
       this.setupSignature = signature; this.setup.replaceChildren();
@@ -720,9 +839,17 @@ return view.extend({
     }
   },
 
+  setServerFilter: function(mode) {
+    this.serverFilter=mode;
+    this.serverFilterAll.setAttribute('aria-pressed',String(mode==='all'));
+    this.serverFilterSelected.setAttribute('aria-pressed',String(mode==='selected'));
+    this.filterTunnels();
+  },
+
   filterTunnels: function() {
     var query = this.serverSearch.value.trim().toLowerCase(), visible = 0;
-    this.tunnelRows.forEach(function(row) { row.element.hidden = !row.search.includes(query); if (!row.element.hidden) visible++; });
+    this.tunnelRows.forEach(function(row) { row.element.hidden = !row.search.includes(query) || (this.serverFilter==='selected' && !row.input.checked); if (!row.element.hidden) visible++; },this);
+    this.serverVisible.textContent=visible+' из '+this.tunnelRows.length+' подключений';
     this.serverEmpty.hidden = visible > 0;
     this.serverEmpty.textContent = this.tunnelRows.length ? 'По этому запросу серверы не найдены.' : 'Здесь появятся ваши серверы. Добавьте подключение в блоке импорта выше.';
   },
@@ -760,7 +887,8 @@ return view.extend({
     this.all.disabled = !checked(this.group) || this.tunnelRows.length === 0;
     this.tunnelRows.forEach(function(row) { row.input.disabled = !checked(this.group); }, this);
     this.autoFields.hidden = !checked(this.group);
-    this.count.textContent = 'Выбрано: ' + count;
+    this.count.textContent = count+' из '+this.tunnelRows.length+' выбрано';
+    this.filterTunnels();
     this.updateSummary();
   },
 
