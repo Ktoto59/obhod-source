@@ -175,12 +175,14 @@
 .ob-log-body .ob-log { max-height: 260px; margin-bottom: 0; }
 .ob-domain-toolbar, .ob-domain-add, .ob-domain-pages { display: flex; align-items: center; gap: 10px; margin: 10px 0; min-width: 0; }
 .ob-domain-toolbar input, .ob-domain-add input { flex: 1; min-width: 0; }
-.ob-domain-rows { max-height: 330px; overflow-y: auto; border: 1px solid var(--ob-border); border-radius: 8px; }
+.ob-domain-rows { border: 1px solid var(--ob-border); border-radius: 8px; }
 .ob-domain-row { display: flex; align-items: center; gap: 10px; padding: 7px 12px; border-bottom: 1px solid var(--ob-border); min-width: 0; }
 .ob-domain-row:last-child { border-bottom: 0; }
-.ob-domain-row > span { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.ob-domain-row > span { flex: 1; overflow-wrap: anywhere; min-width: 0; }
 .ob-domain-empty { padding: 12px; }
-.ob-domain-pages { justify-content: space-between; }
+.ob-domain-pages { justify-content: space-between; flex-wrap: wrap; }
+.ob-domain-pages > span { flex: 1; text-align: center; }
+.ob-domain-editor > .ob-help:empty { display: none; }
 .obhod-app .ob-domain-error { color: var(--ob-danger); }
 .ob-domain-toolbar .ob-counter { white-space: nowrap; flex-shrink: 0; }
 .ob-operation-notice { border: 1px solid var(--ob-accent); border-radius: 10px; background: var(--ob-tint); color: var(--ob-text); padding: 14px 18px; margin-bottom: 16px; overflow-wrap: anywhere; }

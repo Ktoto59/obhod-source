@@ -321,7 +321,7 @@ return view.extend({
         E('div', {}, [E('h2', {}, 'Обход'), E('p', { 'class': 'ob-help' }, 'Ваш маршрут к нужным сайтам')])]),
         E('div', { 'class': 'ob-header-status' }, [this.state, this.statusDetail, this.routeDetail, E('div',{'class':'ob-service-actions'},[this.restartButton,this.serviceButton])])]),
       this.operationNotice,nav, panels, this.footer ]);
-    function changed(event) { if (![self.serverSearch,self.domainSearch,self.domainEntry,self.domainView].includes(event.target) && !self.panels.protocols.contains(event.target)) self.markDirty(); }
+    function changed(event) { if (![self.serverSearch,self.domainSearch,self.domainEntry].includes(event.target) && !self.panels.protocols.contains(event.target)) self.markDirty(); }
     this.root.addEventListener('input',changed);this.root.addEventListener('change',changed);
     var background = getComputedStyle(document.body).backgroundColor.match(/[\d.]+/g);
     if (background && Number(background[3] === undefined ? 1 : background[3]) > 0) {
@@ -526,57 +526,108 @@ return view.extend({
   buildDomainEditor: function() {
     var self=this;
     this.domainPage=0;
-    this.domainCount=E('span',{'class':'ob-counter'});
+    this.domainCount=E('p',{'class':'ob-counter','aria-live':'polite'});
     this.domainSearch=E('input',{type:'search',placeholder:'Найти домен…','aria-label':'Поиск своих доменов',input:function(){self.domainPage=0;self.renderDomains();}});
-    this.domainEntry=E('input',{type:'text',placeholder:'example.org или https://example.org',keydown:function(event){if(event.key==='Enter'){event.preventDefault();self.addDomain();}}});
-    this.domainView=E('select',{'aria-label':'Вид списка доменов',change:function(){
-      var text=self.domainView.value==='text';self.domainBulk.hidden=!text;self.domainListMode.hidden=text;
-      if(!text)self.renderDomains();
-    }},[E('option',{value:'list'},'Компактный список'),E('option',{value:'text'},'Массовое редактирование')]);
+    this.domainClear=E('button',{type:'button','class':'cbi-button ob-button',click:function(){self.domainSearch.value='';self.domainPage=0;self.renderDomains();self.domainSearch.focus();}},'Очистить');
+    this.domainEntry=E('input',{type:'text',placeholder:'example.org или https://example.org','aria-label':'Добавить домен или URL',keydown:function(event){if(event.key==='Enter'){event.preventDefault();self.addDomain();}}});
     this.domainRows=E('div',{'class':'ob-domain-rows'});
     this.domainError=E('p',{'class':'ob-help ob-domain-error','aria-live':'polite'});
+    this.domainNotice=E('p',{'class':'ob-help',role:'status'});
+    this.domainUndo=E('button',{type:'button','class':'cbi-button ob-button',click:function(){self.undoDomainDeletion();}},'Отменить последнее удаление');
     this.domainPager=E('span',{'class':'ob-help'});
     this.domainPrev=E('button',{type:'button','class':'cbi-button ob-button',click:function(){self.domainPage--;self.renderDomains();}},'Назад');
     this.domainNext=E('button',{type:'button','class':'cbi-button ob-button',click:function(){self.domainPage++;self.renderDomains();}},'Далее');
-    this.domainListMode=E('div',{},[
-      E('div',{'class':'ob-domain-toolbar'},[this.domainSearch,this.domainCount]),
-      E('div',{'class':'ob-domain-add'},[this.domainEntry,E('button',{type:'button','class':'cbi-button ob-button',click:function(){self.addDomain();}},'Добавить')]),
-      this.domainRows,this.domainError,E('div',{'class':'ob-domain-pages'},[this.domainPrev,this.domainPager,this.domainNext])]);
-    this.domainBulk=field('Домены и сайты',this.domainText,'Домены или URL, по одному в строке. Можно вставить весь список сразу.');
-    this.domainBulk.hidden=true;
+    // The full list used by save() is independent of both the viewport and the bulk draft.
+    this.domainBulkText=E('textarea',{rows:8,'aria-label':'Полный список доменов',input:function(){self.updateDomainBulkState();}},this.domainText.value);
+    this.domainBulkBaseline=this.domainBulkText.value;
+    this.domainBulkHint=E('p',{'class':'ob-help','aria-live':'polite'});
+    this.domainBulkReplace=E('button',{type:'button','class':'cbi-button ob-button',click:function(){self.replaceDomainList();}},'Заменить полный список доменов');
+    this.domainBulk=E('details',{'class':'ob-details'},[E('summary',{},'Массовое редактирование'),
+      field('Полный список доменов',this.domainBulkText,'Домены или URL, по одному в строке. Кнопка ниже заменяет весь список, независимо от поиска и страницы. Затем сохраните настройки.'),
+      this.domainBulkHint,this.domainBulkReplace]);
     this.renderDomains();
-    return E('div',{'class':'ob-domain-editor'},[field('Редактор доменов',this.domainView),this.domainListMode,this.domainBulk]);
+    return E('div',{'class':'ob-domain-editor'},[this.domainCount,
+      E('div',{'class':'ob-domain-toolbar'},[this.domainSearch,this.domainClear]),
+      E('div',{'class':'ob-domain-add'},[this.domainEntry,E('button',{type:'button','class':'cbi-button ob-button',click:function(){self.addDomain();}},'Добавить')]),
+      this.domainError,this.domainNotice,this.domainUndo,this.domainRows,
+      E('nav',{'class':'ob-domain-pages','aria-label':'Страницы доменов'},[this.domainPrev,this.domainPager,this.domainNext]),this.domainBulk]);
+  },
+
+  updateDomainBulkState: function() {
+    var dirty=this.domainBulkText.value!==this.domainBulkBaseline;
+    this.domainBulkReplace.disabled=!dirty;
+    this.domainBulkHint.textContent=dirty?'Черновик не включён в список. Нажмите «Заменить полный список доменов» перед сохранением.':'';
   },
 
   renderDomains: function() {
     var self=this, values;
     this.domainRows.replaceChildren();
-    try {values=Array.from(new Set(domains(this.domainText.value)));this.domainError.textContent='';}
+    try {
+      if(this.domainCacheText!==this.domainText.value) {
+        this.domainValues=Array.from(new Set(domains(this.domainText.value)));
+        this.domainSorted=this.domainValues.slice().sort();
+        this.domainCacheText=this.domainText.value;
+      }
+      values=this.domainSorted;
+    }
     catch(error){this.domainError.textContent=error.message;this.domainCount.textContent='Проверьте текст списка';this.domainPrev.disabled=true;this.domainNext.disabled=true;return;}
+    if(this.domainBulkText.value===this.domainBulkBaseline && this.domainBulkBaseline!==this.domainText.value) {
+      this.domainBulkText.value=this.domainText.value;this.domainBulkBaseline=this.domainText.value;
+    }
+    this.updateDomainBulkState();
+    this.domainUndo.hidden=!this.domainDeleted;
     var query=this.domainSearch.value.trim().toLowerCase(), filtered=values.filter(function(value){return value.toLowerCase().includes(query);});
-    var pages=Math.max(1,Math.ceil(filtered.length/50));this.domainPage=Math.max(0,Math.min(this.domainPage,pages-1));
-    this.domainCount.textContent=query?'Найдено: '+filtered.length+' из '+values.length:'Доменов: '+values.length;
-    filtered.slice(this.domainPage*50,(this.domainPage+1)*50).forEach(function(value){
+    var size=25, pages=Math.max(1,Math.ceil(filtered.length/size));this.domainPage=Math.max(0,Math.min(this.domainPage,pages-1));
+    this.domainCount.textContent=query?'Найдено '+filtered.length+' из '+values.length:'Доменов: '+values.length;
+    this.domainClear.disabled=!this.domainSearch.value;
+    filtered.slice(this.domainPage*size,(this.domainPage+1)*size).forEach(function(value){
       self.domainRows.appendChild(E('div',{'class':'ob-domain-row'},[E('span',{title:value},value),
         E('button',{type:'button','class':'ob-delete','aria-label':'Удалить домен '+value,title:'Удалить',click:function(){
-          self.domainText.value=values.filter(function(item){return item!==value;}).join('\n');self.markDirty();self.renderDomains();
+          var current=Array.from(new Set(domains(self.domainText.value))), index=current.indexOf(value);
+          if(index<0)return;
+          self.domainDeleted={value:value,index:index};current.splice(index,1);
+          self.domainText.value=current.join('\n');self.domainError.textContent='';self.domainNotice.textContent='Удалён домен '+value+'.';self.markDirty();self.renderDomains();
         }},'×')]));
     });
-    if(!filtered.length)this.domainRows.appendChild(E('p',{'class':'ob-help ob-domain-empty'},query?'По этому запросу ничего не найдено.':'Добавьте домен или вставьте список в режиме массового редактирования.'));
-    this.domainPager.textContent=filtered.length?'Страница '+(this.domainPage+1)+' из '+pages:'';
+    if(!filtered.length)this.domainRows.appendChild(E('p',{'class':'ob-help ob-domain-empty'},query?'Домены не найдены':'Список пуст. Добавьте домен или раскройте «Массовое редактирование».'));
+    this.domainPager.textContent=(filtered.length?(this.domainPage*size+1)+'–'+Math.min((this.domainPage+1)*size,filtered.length):'0')+' из '+filtered.length+' · Страница '+(this.domainPage+1)+' из '+pages;
     this.domainPrev.disabled=this.domainPage===0;this.domainNext.disabled=this.domainPage>=pages-1;
   },
 
   addDomain: function() {
     try {
       var added=domains(this.domainEntry.value);if(!added.length)return;
-      this.domainText.value=Array.from(new Set(domains(this.domainText.value).concat(added))).join('\n');
-      this.domainEntry.value='';this.domainSearch.value='';this.domainPage=0;this.markDirty();this.renderDomains();
+      var current=Array.from(new Set(domains(this.domainText.value))), known=new Set(current), count=0;
+      added.forEach(function(value){if(!known.has(value)){known.add(value);current.push(value);count++;}});
+      this.domainError.textContent='';
+      if(!count){this.domainNotice.textContent='Домен уже существует.';return;}
+      this.domainText.value=current.join('\n');this.domainEntry.value='';
+      this.domainNotice.textContent='Добавлено доменов: '+count+'.'+(this.domainSearch.value.trim()?' Поиск остаётся активным.':'');
+      this.markDirty();this.renderDomains();
+    } catch(error){this.domainError.textContent=error.message;}
+  },
+
+  undoDomainDeletion: function() {
+    if(!this.domainDeleted)return;
+    var current=Array.from(new Set(domains(this.domainText.value))), deleted=this.domainDeleted;
+    if(!current.includes(deleted.value))current.splice(Math.min(deleted.index,current.length),0,deleted.value);
+    this.domainText.value=current.join('\n');this.domainDeleted=null;
+    this.domainNotice.textContent='Восстановлен домен '+deleted.value+'.';this.markDirty();this.renderDomains();
+  },
+
+  replaceDomainList: function() {
+    try {
+      var parsed=domains(this.domainBulkText.value), unique=Array.from(new Set(parsed));
+      this.domainText.value=unique.join('\n');this.domainBulkText.value=this.domainText.value;
+      this.domainBulkBaseline=this.domainText.value;this.domainDeleted=null;this.domainError.textContent='';
+      this.domainNotice.textContent='Полный список заменён: '+unique.length+' доменов. Удалено дублей: '+(parsed.length-unique.length)+'. Сохраните настройки.';
+      this.markDirty();this.renderDomains();
     } catch(error){this.domainError.textContent=error.message;}
   },
 
   captureDraft: function() {
     var self=this;
+    this.domainDeleted=null;this.domainUndo.hidden=true;
     this.savedDraft=JSON.parse(JSON.stringify({profile:this.profile,options:this.options}));
     this.savedFields={};
     ['active','group','interval','tolerance','testUrl','listInterval','downloadLists','dnsEnabled','dnsPreset','dnsProtocol','dnsServer','dnsBootstrap','dnsPath','dnsPoolMode','dnsUpstreams','dnsBootstrapServers','dnsTtl','verboseLogs','domainText','cidrText','remoteText','interfaces','manageDns','ipv6','disableQuic'].forEach(function(key){
@@ -589,7 +640,9 @@ return view.extend({
     var self=this, saved=JSON.parse(JSON.stringify(this.savedDraft));this.profile=saved.profile;this.options=saved.options;
     Object.keys(this.savedFields).forEach(function(key){self[key].value=self.savedFields[key].value;if(typeof self.savedFields[key].checked==='boolean')self[key].checked=self.savedFields[key].checked;});
     Object.keys(this.presetInputs).forEach(function(id){self.presetInputs[id].checked=self.profile.routing.presetIds.includes(id);});
-    this.importText.value='';this.domainEntry.value='';this.domainPage=0;
+    this.importText.value='';this.domainEntry.value='';this.domainPage=0;this.domainDeleted=null;
+    this.domainBulkText.value=this.domainText.value;this.domainBulkBaseline=this.domainText.value;
+    this.domainError.textContent='';this.domainNotice.textContent='';
     this.renderTunnels();this.updatePresets();this.updateDnsFields();this.renderDomains();this.markDirty(true);
   },
 
@@ -780,6 +833,7 @@ return view.extend({
     var self = this;
     return Promise.resolve().then(function() {
       if (self.lastStatus.coreBusy || self.lastStatus.updateBusy || self.lastStatus.jobBusy) throw new Error(self.busyReason());
+      if (self.domainBulkText.value!==self.domainBulkBaseline) throw new Error('В массовом редакторе есть черновик. Нажмите «Заменить полный список доменов» или отмените изменения.');
       if (checked(self.dnsEnabled) && self.dnsPoolMode.value !== 'single' && !self.lastStatus.dnsPoolReady) throw new Error('Сначала нажмите «Подготовить DNS-группы» в разделе «Сеть».');
       self.collectSelection();
       self.profile.routing.failoverEnabled = checked(self.group);

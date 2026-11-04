@@ -93,7 +93,8 @@ app.whenReady().then(async () => {
           if (failStatus) throw new Error('No related RPC reply');
           return { dnsPoolReady, running, configured: true, version: 'sing-box version 1.12.22', coreFlavor, coreBusy, wireguard,
             obhodVersion:appVersion, updateBusy, updateAvailable, updateState, availableVersion:'0.1.7',jobBusy,jobState,
-            routeName:'Сервер из работающего ядра',routeDelay:'83',routeOk:true,routeCheckedAt:Math.floor(Date.now()/1000) };
+            routeName:'Сервер из работающего ядра',routeDelay:'83',routeOk:true,routeKnown:true,routeMaxAge:90,
+            routeCheckedAt:Math.floor(Date.now()/1000),routeReceivedAt:Math.floor(Date.now()/1000) };
         }
         if(spec.method==='interfaces') return {devices:[{name:'br-lan',label:'lan · br-lan · 192.0.2.1',up:true},{name:'br-guest',label:'guest · br-guest',up:true}]};
         if(spec.method==='coreVersions') return {versions:['lite','full'].flatMap(profile=>[{profile,value:'1.13.21-obhod.4',recommended:true,downloadBytes:11010846,installedBytes:31160083},{profile,value:'1.13.21-obhod.3',recommended:false,downloadBytes:11000000,installedBytes:31000000}])};
@@ -129,20 +130,60 @@ app.whenReady().then(async () => {
       assert(page.coreVersion.value==='1.13.21-obhod.4' && page.coreVersion.options.length===2,'Versions match the selected kernel flavor');
       assert(page.protocolHelp.textContent.includes('29,7') && page.protocolHelp.textContent.includes('10,5'), 'Package sizes come from router metadata');
       page.selectTab('rules');
-      page.domainText.value=Array.from({length:1000},(_,i)=>'site'+i+'.example').join('\\n');
-      page.markDirty();page.renderDomains();
-      assert(page.domainRows.querySelectorAll('.ob-domain-row').length===50,'Large lists render only one page');
-      page.domainNext.click();assert(page.domainPager.textContent.includes('2 из 20'),'Domain pagination');
-      page.domainSearch.value='site999.';page.domainSearch.dispatchEvent(new Event('input',{bubbles:true}));
-      assert(page.domainRows.querySelectorAll('.ob-domain-row').length===1,'Domain search');
-      page.domainRows.querySelector('button').click();assert(!page.domainText.value.includes('site999.'),'Delete matching domain');
-      page.domainEntry.value='https://Added.example/path';page.addDomain();assert(page.domainText.value.includes('added.example'),'Add normalized URL');
-      page.domainView.value='text';page.domainView.dispatchEvent(new Event('change',{bubbles:true}));assert(!page.domainBulk.hidden,'Bulk editor available');
+      const domainTimings=[];
+      const domainQuery=query=>{page.domainSearch.value=query;page.domainSearch.dispatchEvent(new Event('input',{bubbles:true}));};
+      const domainFixture=count=>Array.from({length:count},(_,i)=>'site'+String(count-i-1).padStart(5,'0')+'.example').join('\\n');
+      assert(!page.domainBulk.open,'Bulk editor starts collapsed');
+      for(const count of [0,1,25,26,100,1000,5000,10000]) {
+        const raw=domainFixture(count);page.domainText.value=raw;page.domainPage=0;
+        const coldStart=performance.now();domainQuery('');const coldRenderMs=performance.now()-coldStart;
+        const start=performance.now();page.renderDomains();
+        assert(page.domainRows.querySelectorAll('.ob-domain-row').length===Math.min(25,count),'Bounded DOM for '+count);
+        assert(page.domainText.value===raw,'Rendering never sorts stored order for '+count);
+        assert(!['auto','scroll'].includes(getComputedStyle(page.domainRows).overflowY),'No nested list scroll');
+        if(count)assert(page.domainRows.querySelector('span').textContent==='site00000.example','Alphabetical presentation');
+        else assert(page.domainRows.textContent.includes('Список пуст'),'Empty state');
+        if(count===26){page.domainNext.click();page.domainRows.querySelector('button').click();assert(page.domainPage===0 && page.domainRows.children.length===25,'Delete last row clamps page');page.domainUndo.click();assert(page.domainText.value===raw,'Undo restores original position');}
+        domainQuery('SITE000');assert(page.domainPage===0,'Search resets page');
+        assert(page.domainCount.textContent==='Найдено '+Math.min(100,count)+' из '+count,'Case insensitive partial search over all pages');
+        domainQuery('missing');assert(page.domainRows.textContent==='Домены не найдены','No matches');
+        const searchEnd=performance.now();page.domainClear.click();assert(page.domainSearch.value==='' && document.activeElement===page.domainSearch,'Clear search retains focus');
+        domainTimings.push({count,coldRenderMs:Math.round(coldRenderMs*100)/100,renderAndSearchMs:Math.round((searchEnd-start)*100)/100});
+      }
+      page.domainNext.click();assert(page.domainPager.textContent==='26–50 из 10000 · Страница 2 из 400','Page range and count');
+      page.domainSearch.focus();domainQuery('SITE09999.');
+      assert(page.domainRows.children.length===1 && document.activeElement===page.domainSearch,'Search across all pages retains focus');
+      page.domainRows.querySelector('button').click();assert(!page.domainText.value.includes('site09999.'),'Delete exact filtered domain');
+      page.domainUndo.click();assert(page.domainText.value===domainFixture(10000),'Undo filtered deletion restores order');
+      const beforeDuplicate=page.domainText.value;page.markDirty(true);
+      page.domainEntry.value='https://SITE09999.example/path';page.addDomain();
+      assert(page.domainText.value===beforeDuplicate && !page.dirty && page.domainNotice.textContent.includes('уже существует'),'Normalized duplicate is a no-op');
+      page.testUrl.value='https://draft.example/check';page.testUrl.dispatchEvent(new Event('input',{bubbles:true}));
+      page.domainEntry.value='https://Added.example/path';page.addDomain();
+      assert(page.domainText.value.endsWith('added.example') && page.domainEntry.value==='' && page.domainSearch.value==='SITE09999.','Add normalized URL without clearing active search');
+      assert(page.testUrl.value==='https://draft.example/check','Adding preserves unrelated draft');
+      for(const invalid of ['192.0.2.1','2001:db8::1','192.0.2.0/24','ftp://example.org','https://user:pass@example.org']) {
+        const before=page.domainText.value;page.domainEntry.value=invalid;page.addDomain();assert(page.domainText.value===before && page.domainError.textContent,'Existing domain validation: '+invalid);
+      }
+      page.domainBulk.open=true;const bulkNode=page.domainBulkText;
+      page.domainBulkText.value=domainFixture(1000)+'\\nhttps://SITE00000.example/path';
+      page.domainBulkText.dispatchEvent(new Event('input',{bubbles:true}));
+      const bulkDraft=page.domainBulkText.value;
+      domainQuery('site00001');page.domainRows.querySelector('button').click();page.domainUndo.click();
+      page.domainBulk.open=false;page.selectTab('network');page.selectTab('rules');page.domainBulk.open=true;
+      assert(page.domainBulkText===bulkNode && page.domainBulkText.value===bulkDraft,'Bulk draft survives refresh, collapse, tabs, delete and undo');
+      assert(page.domainText.value.includes('added.example'),'Bulk typing does not replace canonical list');
+      await page.save(false);assert(saves===0 && notifications.at(-1).includes('черновик'),'Unaccepted bulk draft blocks accidental save');
+      page.domainBulkReplace.click();
+      assert(page.domainText.value===domainFixture(1000) && page.domainBulkReplace.disabled && page.domainNotice.textContent.includes('дублей: 1'),'Bulk replaces full unfiltered list and removes normalized duplicates');
+      assert(page.testUrl.value==='https://draft.example/check','Bulk replacement preserves unrelated draft');
+      page.domainBulkText.value='invalid';page.domainBulkText.dispatchEvent(new Event('input',{bubbles:true}));page.domainBulkReplace.click();
+      assert(page.domainText.value===domainFixture(1000) && page.domainBulkText.value==='invalid','Invalid bulk edit is atomic and preserves draft');
       page.tunnelRows[0].input.click();page.testUrl.value='https://test.example/check';page.presetInputs.discord.click();
       page.cancelButton.click();await handlerWork;
       assert(!page.dirty && page.domainText.value==='' && page.tunnelRows[0].input.checked && !page.presetInputs.discord.checked,'Cancel restores fields, group and presets');
       assert(saves===0 && serviceRequests.length===0,'Cancel does not save or toggle the service');
-      page.domainView.value='list';page.domainView.dispatchEvent(new Event('change',{bubbles:true}));
+      assert(page.domainBulkText.value==='' && page.domainUndo.hidden,'Cancel discards bulk draft and undo');page.domainClear.click();
       page.selectTab('network');
       assert(page.dnsServer.disabled, 'Custom DNS controls disabled initially');
       assert(page.dnsSettings.hidden, 'Disabled DNS settings do not occupy the page');
@@ -183,7 +224,7 @@ app.whenReady().then(async () => {
       assert(page.profile.tunnels.length === 51 && page.importText.value === '', 'Subscription import and duplicates');
       assert(page.all.indeterminate, 'New server starts outside existing group');
       page.all.click();
-      page.domainText.value = 'https://Example.org/path';
+      page.domainText.value = 'https://Example.org/path\\nz.example\\na.example';page.renderDomains();domainQuery('example');
       page.cidrText.value = '203.0.113.0/24';
       page.ipv6.checked = true;
       page.disableQuic.checked=true;page.downloadLists.checked=true;
@@ -192,7 +233,14 @@ app.whenReady().then(async () => {
       assert(applied && running && applied.profile.tunnels.length === 51, 'Save and start');
       assert(uploadChunks>3,'Large Unicode profile is transferred in small chunks');
       assert(applied.profile.routing.failoverTunnelIds.length === 51, 'Group saved');
-      assert(applied.profile.routing.localLists[0].domains[0] === 'example.org', 'URL converted to domain');
+      assert(applied.profile.routing.localLists[0].domains.includes('example.org'), 'URL converted to domain');
+      // The pre-existing shared validator sorts on save; the editor must preserve that contract.
+      assert(applied.profile.routing.localLists[0].domains.join(',')==='a.example,example.org,z.example','Filtered view saves the full list with existing shared normalization');
+      assert(page.domainText.value==='https://Example.org/path\\nz.example\\na.example','Presentation leaves input order intact');
+      assert(page.domainUndo.hidden,'Successful save clears deletion undo');
+      const reopened=new Function('view','rpc','fs','ui','poll','core','E','L', ${JSON.stringify(source)})(view,rpc,fs,ui,{add:()=>{}},core,E,pageL);
+      reopened.render([page.lastStatus,JSON.stringify(applied),'',{}, {},await rpc.declare({method:'coreVersions'})()]);
+      assert(reopened.domainText.value==='a.example\\nexample.org\\nz.example' && reopened.domainRows.children.length===3,'Saved full list reopens intact');
       assert(applied.config.inbounds.find(i=>i.type==='tun').auto_redirect, 'Linux route generated');
       assert(applied.config.inbounds.find(i=>i.type==='tun').address.length === 2, 'IPv6 interception');
       assert(applied.profile.routing.dnsTtl===120 && applied.config.dns.servers.find(s=>s.tag==='proxy-dns').type==='https', 'DNS settings saved through shared generator');
@@ -203,7 +251,7 @@ app.whenReady().then(async () => {
       page.serviceButton.click();await handlerWork;assert(!running && page.serviceButton.textContent==='Включить','Actual click stops service even when LuCI disables the button');
       page.serviceButton.click();await handlerWork;assert(running && serviceRequests.at(-1)==='start' && saves===1,'Separate start uses saved configuration');
       page.restartButton.click();await handlerWork;assert(running && serviceRequests.at(-1)==='restart' && saves===1,'Restart uses the saved configuration');
-      assert(page.liveRoute.textContent==='Сервер из работающего ядра' && page.liveDelay.textContent==='83 мс','Header displays actual selected route and delay');
+      assert(page.liveRoute.textContent==='Сервер из работающего ядра' && page.liveDelay.textContent==='83 мс','Header displays actual selected route and delay: '+page.liveRoute.textContent+' / '+page.liveDelay.textContent);
       await page.runDiagnostics();assert(diagnosticRequests.length===1 && page.diagnosticButton.disabled,'Background diagnostics starts');
       jobBusy=false;jobState='done';page.updateStatus(await rpc.declare({method:'status'})());await page.refreshDiagnostics();
       assert(page.diagnosticRows.querySelector('.is-ok .ob-check-ok').textContent.includes('✓') && page.diagnosticRows.querySelector('.is-fail .ob-check-fail').textContent.includes('✕'),'Diagnostic outcomes have colored cards and text indicators');
@@ -229,7 +277,7 @@ app.whenReady().then(async () => {
       page.selectTab('rules');page.domainText.value='during-install.example';page.markDirty();
       assert(!page.operationNotice.hidden && page.operationTitle.textContent.includes('протоколов') && !page.cancelButton.disabled,'Installation progress is visible on every tab and cancel remains available');
       page.cancelButton.click();await handlerWork;
-      assert(page.domainText.value==='https://Example.org/path' && !page.dirty && coreBusy,'Cancel restores the draft without interrupting package installation');
+      assert(page.domainText.value==='https://Example.org/path\\nz.example\\na.example' && !page.dirty && coreBusy,'Cancel restores the draft without interrupting package installation');
       await page.save(false);
       assert(saves === 1 && notifications.at(-1).includes('окончания установки'), 'Save blocked during package operation');
       coreBusy = false; coreFlavor = 'sing-box'; wireguard = true;
@@ -297,12 +345,13 @@ app.whenReady().then(async () => {
       page.removeCoreButton.click();await handlerWork;assert(removals===0 && modalNodes.length,'Core removal asks for confirmation');
       var confirm=modalNodes[1].querySelector('button:last-child');confirm.click();await handlerWork;assert(removals===1 && coreBusy,'Confirmed removal starts an asynchronous core operation');
       coreBusy=false;coreFlavor='';page.updateStatus(await rpc.declare({method:'status'})());assert(page.removeCoreButton.disabled,'Unmanaged or absent core cannot be deleted');
-      return { coreVersions:true,coreRemoval:true,serviceRestart:true,diagnosticColors:true,nativeLoader, nativeDOM: !!nativeDOM, dnsSettings: true, dnsPool: true, interfaceDiscovery: true, serviceToggle: true, diagnostics: true, logs: true, routeLatency: true, selfUpdate: true, standaloneRPC: true, pollingRecovery: true, tabs: true, checkboxDefaults: true, presetCompatibility: true, serverSearch: true, selectAll: true, subscriptionImport: true, duplicates: true, routerConfig: true, validation: true, longNames: true, profileReadFailure: true, installerDefaults: true, protocolInstallation: true };
+      return { domainTimings,domainEditor:true,coreVersions:true,coreRemoval:true,serviceRestart:true,diagnosticColors:true,nativeLoader, nativeDOM: !!nativeDOM, dnsSettings: true, dnsPool: true, interfaceDiscovery: true, serviceToggle: true, diagnostics: true, logs: true, routeLatency: true, selfUpdate: true, standaloneRPC: true, pollingRecovery: true, tabs: true, checkboxDefaults: true, presetCompatibility: true, serverSearch: true, selectAll: true, subscriptionImport: true, duplicates: true, routerConfig: true, validation: true, longNames: true, profileReadFailure: true, installerDefaults: true, protocolInstallation: true };
     })()`);
     console.log(`OPENWRT_UI_TEST ${JSON.stringify(result)}`);
     const screenshots = path.join(root, '.tmp', 'openwrt-ui-preview');
     const paint = async () => { await window.webContents.executeJavaScript('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))'); await new Promise(resolve=>setTimeout(resolve,500)); };
     fs.mkdirSync(screenshots, {recursive:true});
+    await window.webContents.executeJavaScript("obhodPage.domainText.value=Array.from({length:1000},(_,i)=>'site'+String(i).padStart(5,'0')+'.example').join('\\n')+'\\n'+('a'.repeat(63)+'.').repeat(3)+'example.com'; obhodPage.domainClear.click();");
     window.setContentSize(1180, 1000);
     for (const tab of ['overview','connections','rules','protocols','network','diagnostics']) {
       await window.webContents.executeJavaScript(`obhodPage.selectTab(${JSON.stringify(tab)}); scrollTo(0,0);`);
@@ -316,7 +365,15 @@ app.whenReady().then(async () => {
         const width = await window.webContents.executeJavaScript(`obhodPage.selectTab(${JSON.stringify(tab)}); scrollTo(0,0); document.documentElement.scrollWidth <= innerWidth;`);
         if (!width) throw new Error('Mobile overflow '+viewport+': '+tab);
       }
+      for(const dark of [true,false]) {
+        for(const open of [true,false]) {
+          const fits=await window.webContents.executeJavaScript(`obhodPage.root.classList.toggle('ob-dark',${dark});obhodPage.selectTab('rules');obhodPage.domainBulk.open=${open};document.documentElement.scrollWidth<=innerWidth;`);
+          if(!fits)throw new Error('Domain editor overflow: '+JSON.stringify({viewport,dark,open}));
+        }
+      }
     }
+    await window.webContents.executeJavaScript("obhodPage.selectTab('rules'); obhodPage.root.classList.add('ob-dark');scrollTo(0,0);");
+    await paint();fs.writeFileSync(path.join(screenshots,'mobile-rules.png'),(await window.webContents.capturePage()).toPNG());
     await window.webContents.executeJavaScript("obhodPage.selectTab('connections'); scrollTo(0,0);");
     await paint();
     fs.writeFileSync(path.join(screenshots, 'mobile-connections.png'), (await window.webContents.capturePage()).toPNG());
@@ -324,6 +381,8 @@ app.whenReady().then(async () => {
     await window.webContents.executeJavaScript("document.body.style.background='#f5f7fa'; document.documentElement.style.background='#f5f7fa'; obhodPage.root.classList.remove('ob-dark'); obhodPage.selectTab('overview'); scrollTo(0,0);");
     await paint();
     fs.writeFileSync(path.join(screenshots, 'light-overview.png'), (await window.webContents.capturePage()).toPNG());
+    await window.webContents.executeJavaScript("obhodPage.selectTab('rules');scrollTo(0,0);");
+    await paint();fs.writeFileSync(path.join(screenshots,'light-rules.png'),(await window.webContents.capturePage()).toPNG());
     clearTimeout(timeout); app.exit(0);
   } catch (error) { clearTimeout(timeout); console.error(error.stack || error); app.exit(1); }
 });
