@@ -11,6 +11,8 @@ const luciRuntime = loaderFlag === -1 ? '' : fs.readFileSync(process.argv[loader
 const css = fs.readFileSync(path.join(root, 'openwrt/luci-app-obhod/htdocs/luci-static/resources/obhod/overview.css'), 'utf8');
 const themeFlag = process.argv.indexOf('--luci-theme');
 const themeCSS = themeFlag === -1 ? '' : fs.readFileSync(process.argv[themeFlag + 1], 'utf8');
+// Standalone fixture only; native runs use the unmodified Bootstrap stylesheet.
+const fixtureTheme = themeCSS || ':root{--background-color-high:#fff;--background-color-medium:#f9f9f9;--background-color-low:#f5f5f5;--text-color-high:#404040;--border-color-medium:#ddd}:root[data-darkmode="true"]{--background-color-high:#222;--background-color-medium:#282828;--background-color-low:#2c2c2c;--text-color-high:#bfbfbf;--border-color-medium:#444}';
 app.disableHardwareAcceleration();
 app.setPath('userData', path.join(root, '.tmp', 'openwrt-ui-test'));
 
@@ -18,7 +20,7 @@ app.whenReady().then(async () => {
   const window = new BrowserWindow({ show: false, width: 1180, height: 720, webPreferences: { contextIsolation: true, sandbox: true, backgroundThrottling: false } });
   const timeout = setTimeout(() => { console.error('OpenWrt UI test timed out'); app.exit(1); }, 60000);
   try {
-    await window.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent('<!doctype html><style>'+themeCSS+'</style><style>html{background:#222}body{font:14px sans-serif;margin:28px;padding:0;min-height:0;background:#222;color:#eee}#page{width:100%;max-width:1120px;margin:0 auto}</style><main id="page"></main>'));
+    await window.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent('<!doctype html><html data-darkmode="true"><style>'+fixtureTheme+'</style><style>html{background:var(--background-color-high)}body{font:14px sans-serif;margin:28px;padding:0;min-height:0;background:var(--background-color-high);color:var(--text-color-high)}#page{width:100%;max-width:1120px;margin:0 auto}</style><main id="page"></main>'));
     const profile = defaultRouterProfile();
     profile.tunnels = Array.from({ length: 50 }, (_, index) => parseProxyUri(`socks5://192.0.2.10:${1080 + index}#${encodeURIComponent('Сервер ' + index + ' с очень длинным названием '.repeat(5))}`));
     profile.routing.activeTunnelId = profile.tunnels[0].id;
@@ -112,6 +114,8 @@ app.whenReady().then(async () => {
         if (spec.method === 'subscription') return { ok: true, base64: btoa(btoa('socks5://192.0.2.10:1080#Duplicate\\nsocks5://192.0.2.55:1080#New')) };
         return { ok: true };
       } };
+      let systemLoads=0;
+      const uci={load:async name=>{assert(name==='system','Only system timezone is read');systemLoads++;},get:()=> 'Asia/Yekaterinburg'};
       const fs = { read: async () => JSON.stringify(${JSON.stringify(saved)}) };
       const ui = { createHandlerFn: (owner, fn) => (...args) => {
         const target=args[0]?.currentTarget;
@@ -120,17 +124,29 @@ app.whenReady().then(async () => {
         return handlerWork;
       }, showModal: (_,nodes) => {modalNodes=nodes;}, hideModal: () => {modalNodes=[];},
         addNotification: (_, node) => notifications.push(node.textContent) };
-      const page = new Function('view','rpc','fs','ui','poll','core','E','L', ${JSON.stringify(source)})(view,rpc,fs,ui,{add:callback=>{poller=callback;}},core,E,pageL);
+      const page = new Function('view','rpc','fs','ui','poll','core','E','L','uci', ${JSON.stringify(source)})(view,rpc,fs,ui,{add:callback=>{poller=callback;}},core,E,pageL,uci);
       document.getElementById('page').appendChild(page.render(await page.load()));
       await new Promise(resolve => { const link=page.root.querySelector('link'); if(link.sheet) resolve(); else link.onload=resolve; });
       window.obhodPage = page;
+      window.setObhodTestTheme=dark=>document.documentElement.setAttribute('data-darkmode',String(dark));
       assert(page.activeTab === 'overview' && page.panels.connections.hidden, 'Only overview initially visible');
       assert(page.pageTitle.textContent==='Обзор' && page.breadcrumb.textContent==='Обзор','Mockup page heading and breadcrumb');
       assert(page.healthBadge.textContent==='Служба выключена' && page.healthNote.textContent.includes('ещё не проверены'),'No fabricated health checks');
       assert(page.footer.hidden && !page.dirty,'Clean page hides floating savebar');
-      const darkBefore=page.root.classList.contains('ob-dark');page.themeButton.click();
-      assert(page.root.classList.contains('ob-dark')!==darkBefore && !page.dirty,'Theme is local presentation and does not dirty settings');page.themeButton.click();
-      page.setTheme(false);assert(getComputedStyle(page.root.querySelector('.ob-brand-title')).color===getComputedStyle(page.root).color,'Light brand text overrides surrounding LuCI theme: '+getComputedStyle(page.root.querySelector('.ob-brand-title')).color+' vs '+getComputedStyle(page.root).color);page.setTheme(darkBefore);
+      assert(!page.themeButton && !page.setTheme && !page.root.querySelector('.ob-theme-button'),'No separate Obhod theme or toggle');
+      const paletteProbe=E('div',{style:'background:var(--background-color-medium);color:var(--text-color-high);border:1px solid var(--border-color-medium)'});document.body.appendChild(paletteProbe);
+      const surfaces=[];
+      for(const dark of [false,true]){
+        setObhodTestTheme(dark);
+        const probe=getComputedStyle(paletteProbe),card=getComputedStyle(page.root.querySelector('.ob-card'));
+        assert(getComputedStyle(page.root).backgroundColor==='rgba(0, 0, 0, 0)','App background blends into LuCI');
+        assert(getComputedStyle(page.root.querySelector('.ob-header')).backgroundColor===getComputedStyle(document.body).backgroundColor,'Sticky header uses native page background');
+        assert(card.backgroundColor===probe.backgroundColor && card.borderTopColor===probe.borderTopColor,'Sections inherit native surfaces and borders');
+        assert(getComputedStyle(page.root.querySelector('.ob-brand-title')).color===probe.color && !page.dirty,'Text follows native theme without dirtying settings');
+        surfaces.push(card.backgroundColor);
+      }
+      assert(surfaces[0]!==surfaces[1],'Open page follows a native theme change');paletteProbe.remove();
+      assert(page.systemTimeZone==='Asia/Yekaterinburg' && systemLoads===1,'Router system timezone read once');
       page.importToggle.click();assert(page.importDetails.open,'Import action expands existing editor');page.importToggle.click();
       page.serverFilterSelected.click();assert(page.tunnelRows.filter(row=>!row.element.hidden).length===2 && !page.dirty,'Selected server filter preserves settings');
       page.serverSearch.value='not-found';page.filterTunnels();assert(page.serverEmpty.textContent.includes('не найдены'),'Server filter combines with search');
@@ -257,7 +273,7 @@ app.whenReady().then(async () => {
       assert(applied.profile.routing.localLists[0].domains.join(',')==='a.example,example.org,z.example','Filtered view saves the full list with existing shared normalization');
       assert(page.domainText.value==='https://Example.org/path\\nz.example\\na.example','Presentation leaves input order intact');
       assert(page.domainUndo.hidden,'Successful save clears deletion undo');
-      const reopened=new Function('view','rpc','fs','ui','poll','core','E','L', ${JSON.stringify(source)})(view,rpc,fs,ui,{add:()=>{}},core,E,pageL);
+      const reopened=new Function('view','rpc','fs','ui','poll','core','E','L','uci', ${JSON.stringify(source)})(view,rpc,fs,ui,{add:()=>{}},core,E,pageL,uci);
       reopened.render([page.lastStatus,JSON.stringify(applied),'',{}, {},await rpc.declare({method:'coreVersions'})()]);
       assert(reopened.domainText.value==='a.example\\nexample.org\\nz.example' && reopened.domainRows.children.length===3,'Saved full list reopens intact');
       assert(applied.config.inbounds.find(i=>i.type==='tun').auto_redirect, 'Linux route generated');
@@ -285,6 +301,11 @@ app.whenReady().then(async () => {
       assert(page.logText.textContent.includes('WARN') && logRequests>0,'Opening the journal loads its contents');
       page.logDetails.open=false;var beforeLogRequests=logRequests;await poller();assert(logRequests===beforeLogRequests,'Closed journal stays idle');
       await page.refreshLogs();assert(logRequests===beforeLogRequests+1,'Explicit refresh loads the journal');
+      const esc=String.fromCharCode(27);
+      logBody='+0000 2026-11-04 08:11:14 '+esc+'[33mWARN'+esc+'[0m [123] example: <script>alert(1)</script>\\r\\n';
+      await page.refreshLogs();
+      assert(page.logText.textContent==='+0500 2026-11-04 13:11:14 WARN [123] example: <script>alert(1)</script>\\n','ANSI removed and timestamp converted to router timezone');
+      assert(!page.logText.querySelector('script') && logBody.includes(esc),'Log remains plain text and raw data is unchanged');
       page.tunnelRows.forEach((row, i) => { row.input.checked = i === 0; });
       await page.save(false);
       assert(saves === 1 && notifications.at(-1).includes('минимум два'), 'Incomplete group is not saved');
@@ -329,15 +350,15 @@ app.whenReady().then(async () => {
       assert(page.updateDetails.open && page.updateBadge.textContent==='Ошибка' && page.updateSummaryMessage.textContent==='Проверочная ошибка','Update errors stay visible in the summary');
       page.updateStatus(completedState);
       assert(document.documentElement.scrollWidth <= window.innerWidth, 'Long names stay inside page');
-      const unreadable = new Function('view','rpc','fs','ui','poll','core','E','L', ${JSON.stringify(source)})(view,rpc,{read:async()=>{throw new Error('Denied');}},ui,{add:()=>{}},core,E,pageL);
+      const unreadable = new Function('view','rpc','fs','ui','poll','core','E','L','uci', ${JSON.stringify(source)})(view,rpc,{read:async()=>{throw new Error('Denied');}},ui,{add:()=>{}},core,E,pageL,uci);
       let rejected = false;
       try { await unreadable.load(); } catch (_) { rejected = true; }
       assert(rejected, 'Unreadable saved profile must not silently become empty');
-      const initial = new Function('view','rpc','fs','ui','poll','core','E','L', ${JSON.stringify(source)})(view,rpc,fs,ui,{add:()=>{}},core,E,pageL);
+      const initial = new Function('view','rpc','fs','ui','poll','core','E','L','uci', ${JSON.stringify(source)})(view,rpc,fs,ui,{add:()=>{}},core,E,pageL,uci);
       initial.render([{ configured: false }, '', JSON.stringify({version:1,presetIds:['discord','telegram']})]);
       assert(initial.profile.tunnels.length === 0 && initial.presetInputs.discord.checked && initial.presetInputs.telegram.checked, 'Installer defaults appear without bundled tunnels');
       assert(!initial.group.checked && !initial.ipv6.checked && !initial.presetInputs.youtube.checked, 'Fresh settings do not check every false boolean');
-      const fullPage = new Function('view','rpc','fs','ui','poll','core','E','L', ${JSON.stringify(source)})(view,rpc,fs,ui,{add:()=>{}},core,E,pageL);
+      const fullPage = new Function('view','rpc','fs','ui','poll','core','E','L','uci', ${JSON.stringify(source)})(view,rpc,fs,ui,{add:()=>{}},core,E,pageL,uci);
       fullPage.render([{coreFlavor:'sing-box',configured:false},'', '', {}, {},await rpc.declare({method:'coreVersions'})()]);
       assert(fullPage.protocols.value==='all' && fullPage.coreVersion.value==='1.13.21-obhod.4','A full core remains the selected flavor after page reload');
       assert(!initial.dnsMode,'New installations do not offer legacy DNS');
@@ -394,18 +415,18 @@ app.whenReady().then(async () => {
       }
       for(const dark of [true,false]) {
         for(const open of [true,false]) {
-          const fits=await window.webContents.executeJavaScript(`obhodPage.root.classList.toggle('ob-dark',${dark});obhodPage.selectTab('rules');obhodPage.domainBulk.open=${open};document.documentElement.scrollWidth<=innerWidth;`);
+          const fits=await window.webContents.executeJavaScript(`setObhodTestTheme(${dark});obhodPage.selectTab('rules');obhodPage.domainBulk.open=${open};document.documentElement.scrollWidth<=innerWidth;`);
           if(!fits)throw new Error('Domain editor overflow: '+JSON.stringify({viewport,dark,open}));
         }
       }
     }
-    await window.webContents.executeJavaScript("obhodPage.selectTab('rules'); obhodPage.root.classList.add('ob-dark');scrollTo(0,0);");
+    await window.webContents.executeJavaScript("obhodPage.selectTab('rules'); setObhodTestTheme(true);scrollTo(0,0);");
     await paint();fs.writeFileSync(path.join(screenshots,'mobile-rules.png'),(await window.webContents.capturePage()).toPNG());
     await window.webContents.executeJavaScript("obhodPage.selectTab('connections'); scrollTo(0,0);");
     await paint();
     fs.writeFileSync(path.join(screenshots, 'mobile-connections.png'), (await window.webContents.capturePage()).toPNG());
     window.setContentSize(1180, 1000);
-    await window.webContents.executeJavaScript("document.body.style.background='#f5f7fa'; document.documentElement.style.background='#f5f7fa'; obhodPage.root.classList.remove('ob-dark'); obhodPage.selectTab('overview'); scrollTo(0,0);");
+    await window.webContents.executeJavaScript("setObhodTestTheme(false); obhodPage.selectTab('overview'); scrollTo(0,0);");
     await paint();
     fs.writeFileSync(path.join(screenshots, 'light-overview.png'), (await window.webContents.capturePage()).toPNG());
     await window.webContents.executeJavaScript("obhodPage.selectTab('rules');scrollTo(0,0);");
@@ -415,8 +436,10 @@ app.whenReady().then(async () => {
     const editorBottom=await window.webContents.executeJavaScript('Math.ceil(obhodPage.domainCard.getBoundingClientRect().bottom+20)');
     window.setContentSize(1180,editorBottom);
     for(const dark of [true,false]){
-      await window.webContents.executeJavaScript(`obhodPage.setTheme(${dark});scrollTo(0,0);`);await paint();
+      await window.webContents.executeJavaScript(`setObhodTestTheme(${dark});scrollTo(0,0);`);await paint();
       fs.writeFileSync(path.join(screenshots,'rules-design-'+(dark?'dark':'light')+'.png'),(await window.webContents.capturePage()).toPNG());
+      const sectionClip=await window.webContents.executeJavaScript('(()=>{const r=obhodPage.domainBulk.parentElement.getBoundingClientRect();return {x:Math.floor(r.x)-4,y:Math.floor(r.y)-4,width:Math.ceil(r.width)+8,height:Math.ceil(r.height)+8};})()');
+      fs.writeFileSync(path.join(screenshots,'native-sections-'+(dark?'dark':'light')+'.png'),(await window.webContents.capturePage(sectionClip)).toPNG());
     }
     clearTimeout(timeout); app.exit(0);
   } catch (error) { clearTimeout(timeout); console.error(error.stack || error); app.exit(1); }

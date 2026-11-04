@@ -3,6 +3,7 @@
 'require rpc';
 'require fs';
 'require ui';
+'require uci';
 'require poll';
 'require obhod.core as core';
 
@@ -80,14 +81,16 @@ return view.extend({
         if (state.configured) throw new Error('Не удалось прочитать сохранённые подключения. Проверьте доступ к настройкам; профиль не изменён.');
         return '';
       }).then(function(text) {
-        return Promise.all([fs.read('/etc/obhod/defaults.json').catch(function() { return ''; }), interfaces().catch(function() { return {devices:[]}; }), coreSizes().catch(function(){return {};}), coreVersions().catch(function(){return {unavailable:true};})])
-          .then(function(extra) { return [state, text, extra[0], extra[1], extra[2], extra[3]]; });
+        return Promise.all([fs.read('/etc/obhod/defaults.json').catch(function() { return ''; }), interfaces().catch(function() { return {devices:[]}; }), coreSizes().catch(function(){return {};}), coreVersions().catch(function(){return {unavailable:true};}),
+          uci.load('system').then(function(){return {zonename:uci.get('system','@system[0]','zonename') || 'UTC'};}).catch(function(){return null;})])
+          .then(function(extra) { return [state, text, extra[0], extra[1], extra[2], extra[3],extra[4]]; });
       });
     });
   },
 
   render: function(data) {
     var self = this, saved;
+    this.configureSystemTime(data[6]);
     this.loadedVersion = data[0].obhodVersion;
     this.coreSizes = data[4] || {};
     this.coreCatalog = data[5] || {unavailable:true};
@@ -349,7 +352,8 @@ return view.extend({
         this.diagnosticRows,E('div',{'class':'ob-inline-footer'},[this.diagnosticMessage,this.diagnosticButton])],this.diagnosticSummary),
       card('Подробности','',[this.diagnosticDetails,E('p',{'class':'ob-note'},'Проверки используют сохранённые настройки. Ошибки показываются с пояснением; секреты скрываются.')])]));
     this.logDetails = E('details',{'class':'ob-accordion ob-log-details'},[E('summary',{},['Журнал службы',E('span',{'class':'ob-help'},'До 32 КБ в ОЗУ · без записи во flash')]),
-      E('div',{'class':'ob-log-body ob-accordion-body'},[switchField('Подробный журнал',this.verboseLogs,'По умолчанию сохраняются только предупреждения и ошибки.'),E('div',{'class':'ob-inline-actions'},[E('button',{type:'button','class':'cbi-button ob-button',click:ui.createHandlerFn(this,function(){return self.refreshLogs();})},'Обновить'),E('button',{type:'button','class':'cbi-button ob-button',click:ui.createHandlerFn(this,function(){return clearLogs().then(function(){return self.refreshLogs();});})},'Очистить')]),this.logText])]);
+      E('div',{'class':'ob-log-body ob-accordion-body'},[switchField('Подробный журнал',this.verboseLogs,'По умолчанию сохраняются только предупреждения и ошибки.'),E('div',{'class':'ob-inline-actions'},[E('button',{type:'button','class':'cbi-button ob-button',click:ui.createHandlerFn(this,function(){return self.refreshLogs();})},'Обновить'),E('button',{type:'button','class':'cbi-button ob-button',click:ui.createHandlerFn(this,function(){return clearLogs().then(function(){return self.refreshLogs();});})},'Очистить')]),
+        E('p',{'class':'ob-help ob-log-zone'},this.systemTimeUnavailable?'Часовой пояс роутера недоступен; время показано в UTC.':'Часовой пояс роутера: '+this.systemTimeZone+'.'),this.logText])]);
     this.logDetails.addEventListener('toggle', function() { if (self.logDetails.open) self.refreshLogs(); });
     this.panels.diagnostics.appendChild(this.logDetails);
     this.serviceButton = E('button', { type: 'button', 'class': 'cbi-button ob-button ob-service-button', click: ui.createHandlerFn(this, this.toggleService) }, 'Включить');
@@ -362,19 +366,14 @@ return view.extend({
     this.footer = E('footer', { 'class': 'ob-footer' }, [this.dirtyState, E('div', { 'class': 'ob-footer-actions' }, [
       this.cancelButton,this.saveButton,this.applyButton])]);
     this.breadcrumb=E('span');this.pageTitle=E('h2',{'class':'ob-page-title'});this.pageIntro=E('p',{'class':'ob-page-intro'});
-    this.themeButton=E('button',{type:'button','class':'cbi-button ob-button ob-theme-button','aria-label':'Переключить тему',title:'Переключить тему',click:function(){self.setTheme(!self.root.classList.contains('ob-dark'));}},'☼');
     this.root = E('div', { 'class': 'cbi-map obhod-app' }, [E('link', { rel: 'stylesheet', href: L.resource('obhod/overview.css') }),
       E('header', { 'class': 'ob-header' }, [E('div', { 'class': 'ob-brand' }, [E('span', { 'class': 'ob-mark', 'aria-hidden': 'true' }, routeIcon()),
         E('div', {}, [E('strong', {'class':'ob-brand-title'}, 'Обход'), E('p', { 'class': 'ob-help' }, 'OpenWrt · Панель управления')])]),
-        E('div', { 'class': 'ob-header-status' }, [this.routeDetail,this.state,this.restartButton,this.serviceButton,this.themeButton])]),
+        E('div', { 'class': 'ob-header-status' }, [this.routeDetail,this.state,this.restartButton,this.serviceButton])]),
       E('div',{'class':'ob-page-top'},[E('div',{},[E('p',{'class':'ob-eyebrow'},['Обход / ',this.breadcrumb]),this.pageTitle,this.pageIntro]),this.statusDetail]),
       this.operationNotice,nav, panels, this.footer,E('p',{'class':'ob-footer-note'},'Обход · выборочная маршрутизация для OpenWrt') ]);
     function changed(event) { if (![self.serverSearch,self.domainSearch,self.domainEntry,self.domainPageSelect].includes(event.target) && !self.panels.protocols.contains(event.target)) self.markDirty(); }
     this.root.addEventListener('input',changed);this.root.addEventListener('change',changed);
-    var background = getComputedStyle(document.body).backgroundColor.match(/[\d.]+/g);
-    if (background && Number(background[3] === undefined ? 1 : background[3]) > 0) {
-      this.setTheme((Number(background[0]) * 299 + Number(background[1]) * 587 + Number(background[2]) * 114) / 1000 < 128);
-    } else this.setTheme(window.matchMedia('(prefers-color-scheme: dark)').matches);
     this.renderTunnels();
     this.updatePresets(); this.updateCoreVersions(); this.updateProtocolHelp(); this.updateDnsFields(); this.selectTab('overview');
     this.updateStatus(data[0]);
@@ -425,20 +424,14 @@ return view.extend({
     this.renderHealth();
   },
 
-  setTheme: function(dark) {
-    this.root.classList.toggle('ob-dark',dark);
-    this.themeButton.textContent=dark?'☼':'☾';
-    this.themeButton.setAttribute('aria-label',dark?'Включить светлую тему':'Включить тёмную тему');
-  },
-
   routeTelemetry: function(value, now) {
     var measured = Number(value.routeCheckedAt), received = Number(value.routeReceivedAt);
     var age = now - measured, readAge = now - received;
     var known = value.routeKnown === true && measured > 0;
     var fresh = known && age >= -5 && age <= Number(value.routeMaxAge) && received > 0 && readAge >= -5 && readAge < 90;
     var label = !known ? 'нет замера' : !fresh ? 'замер устарел' : value.routeOk ? (value.routeDelay !== '' ? value.routeDelay + ' мс' : 'нет замера') : 'нет ответа';
-    var title = known ? 'Замер: ' + new Date(measured*1000).toLocaleTimeString('ru-RU') : 'Ожидаем замер ядра.';
-    if (received > 0) title += ' Получено: ' + new Date(received*1000).toLocaleTimeString('ru-RU') + '.';
+    var title = known ? 'Замер: ' + this.formatSystemTime(measured,false) : 'Ожидаем замер ядра.';
+    if (received > 0) title += ' Получено: ' + this.formatSystemTime(received,false) + '.';
     if (Number(value.routeDiagnosedAt) > 0) title += ' Явная диагностика.';
     if (!fresh) title += ' Активная HTTPS-проверка доступна в диагностике.';
     return { label: label, title: title };
@@ -595,7 +588,42 @@ return view.extend({
     var failed=checks.some(function(check){return !check.ok;});
     this.healthBadge.textContent=!state.running?'Служба выключена':!checks.length?'Нет результатов':failed?'Требует внимания':'Проверки пройдены';
     this.healthBadge.classList.toggle('ob-badge-green',!!state.running && checks.length>0 && !failed);
-    this.healthNote.textContent=checks.length?(result.checkedAt?'Последняя диагностика: '+new Date(result.checkedAt*1000).toLocaleString('ru-RU'):'Результаты последней диагностики'):'DNS и HTTPS ещё не проверены. Откройте диагностику.';
+    this.healthNote.textContent=checks.length?(result.checkedAt?'Последняя диагностика: '+this.formatSystemTime(result.checkedAt,true):'Результаты последней диагностики'):'DNS и HTTPS ещё не проверены. Откройте диагностику.';
+  },
+
+  configureSystemTime: function(settings) {
+    var zone=String(settings && settings.zonename || 'UTC').replace(/ /g,'_');
+    this.systemTimeUnavailable=!settings;
+    try {
+      this.logDateFormatter=new Intl.DateTimeFormat('en-GB-u-nu-latn',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'});
+    } catch(_) {
+      zone='UTC';this.systemTimeUnavailable=true;
+      this.logDateFormatter=new Intl.DateTimeFormat('en-GB-u-nu-latn',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'});
+    }
+    this.systemTimeZone=zone;
+  },
+
+  formatSystemTime: function(epoch,withDate) {
+    return new Intl.DateTimeFormat('ru-RU',{timeZone:this.systemTimeZone || 'UTC',dateStyle:withDate?'short':undefined,timeStyle:'medium'}).format(new Date(epoch*1000));
+  },
+
+  formatLogText: function(value) {
+    var self=this;
+    // Terminal colour/cursor sequences and OSC metadata are presentation, not log text.
+    var text=String(value || '').replace(/\r\n?/g,'\n')
+      .replace(/(?:\x1b\]|\x9d)[^\x07\x1b\x9c]*(?:\x07|\x1b\\|\x9c)/g,'')
+      .replace(/(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]/g,'')
+      .replace(/(?:\x1b\[|\x9b)[0-?]*[ -/]*$/g,'')
+      .replace(/\x1b[@-_]/g,'').replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g,'');
+    return text.replace(/^([+-]\d{4}) (\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})(\.\d+)?(?=\s)/gm,function(original,offset,date,time,fraction){
+      var instant=new Date(date+'T'+time+offset.slice(0,3)+':'+offset.slice(3));
+      if(!self.logDateFormatter || !Number.isFinite(instant.getTime()))return original;
+      var parts={};self.logDateFormatter.formatToParts(instant).forEach(function(part){parts[part.type]=part.value;});
+      var local=parts.year+'-'+parts.month+'-'+parts.day+' '+parts.hour+':'+parts.minute+':'+parts.second;
+      var shift=Math.round((Date.UTC(Number(parts.year),Number(parts.month)-1,Number(parts.day),Number(parts.hour),Number(parts.minute),Number(parts.second))-instant.getTime())/60000);
+      var minutes=Math.abs(shift), zone=(shift<0?'-':'+')+String(Math.floor(minutes/60)).padStart(2,'0')+String(minutes%60).padStart(2,'0');
+      return zone+' '+local+(fraction || '');
+    });
   },
 
   refreshLogs: function() {
@@ -603,7 +631,7 @@ return view.extend({
     if(this.logsLoading) return this.logsPromise;
     this.logsLoading=true;
     this.logsPromise=logs().then(function(result){
-      self.logText.textContent=result.text || 'Журнал пока пуст.';
+      self.logText.textContent=self.formatLogText(result.text) || 'Журнал пока пуст.';
     }).catch(function(){self.logText.textContent='Не удалось прочитать журнал. Нажмите «Обновить», чтобы повторить.';}).finally(function(){self.logsLoading=false;});
     return this.logsPromise;
   },

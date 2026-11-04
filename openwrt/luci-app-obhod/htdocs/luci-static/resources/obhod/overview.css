@@ -1,24 +1,32 @@
-/* Mockup v3 styles, scoped to Obhod. LuCI chrome stays independent. */
-.obhod-app { color-scheme: dark;
-      --ob-bg:#15191c;--ob-card:#1d2429;--ob-field:#222b30;--ob-raised:#293238;
-      --ob-border:#333e45;--ob-line-soft:#2a343a;--ob-text:#ebf2f4;--ob-muted:#9caeb7;--ob-faint:#738690;
-      --ob-accent:#61d9b2;--ob-tint:#203f36;--ob-on-accent:#103025;--ob-warning:#edbd71;
-      --ob-danger:#ef9292;--ob-shadow:0 18px 50px rgba(0,0,0,.12); }
-.obhod-app:not(.ob-dark) { color-scheme: light;
-      --ob-bg:#f4f7f8;--ob-card:#fff;--ob-field:#f8fafb;--ob-raised:#edf2f4;
-      --ob-border:#d5e0e5;--ob-line-soft:#e4eaed;--ob-text:#1c2b31;--ob-muted:#60747f;--ob-faint:#82929c;
-      --ob-accent:#087e60;--ob-tint:#e3f6ef;--ob-on-accent:#fff;--ob-warning:#a86c18;
-      --ob-danger:#c65057;--ob-shadow:0 18px 50px rgba(40,70,80,.07); }
+/* Mockup v3 layout with the palette inherited from Bootstrap LuCI 24.10/25.12. */
+.obhod-app {
+  color-scheme: inherit;
+  --ob-bg: var(--background-color-high, #fff);
+  --ob-card: var(--background-color-medium, #f9f9f9);
+  --ob-field: var(--background-color-high, #fff);
+  --ob-raised: var(--background-color-low, #f5f5f5);
+  --ob-border: var(--border-color-medium, #ddd);
+  --ob-line-soft: var(--border-color-low, #eee);
+  --ob-text: var(--text-color-high, #404040);
+  --ob-muted: var(--text-color-medium, #808080);
+  --ob-faint: var(--text-color-medium, #808080);
+  --ob-accent: var(--primary-color-high, #1976d2);
+  --ob-tint: var(--background-color-low, #f5f5f5);
+  --ob-on-accent: var(--on-primary-color, #fff);
+  --ob-success: var(--success-color-high, #00ac59);
+  --ob-danger: var(--error-color-high, #c65057);
+  --ob-shadow: 0 8px 30px color-mix(in srgb, var(--text-color-highest, #000) 10%, transparent);
+}
 .obhod-app *, .obhod-app *::before, .obhod-app *::after { box-sizing:border-box }
 .obhod-app { scroll-behavior:smooth }
-.obhod-app { margin:0;background:var(--ob-bg);color:var(--ob-text);font:14px/1.48 system-ui,-apple-system,"Segoe UI",sans-serif }
+.obhod-app { margin:0;background:transparent;color:var(--ob-text);font:14px/1.48 system-ui,-apple-system,"Segoe UI",sans-serif }
 .obhod-app button, .obhod-app input, .obhod-app select, .obhod-app textarea { font:inherit }
 .obhod-app button { cursor:pointer }
 .obhod-app button:disabled { opacity:.5;cursor:not-allowed }
 .obhod-app a { color:var(--ob-accent) }
 .obhod-app button:focus-visible, .obhod-app input:focus-visible, .obhod-app select:focus-visible, .obhod-app textarea:focus-visible, .obhod-app summary:focus-visible { outline:2px solid var(--ob-accent);outline-offset:3px }
 .obhod-app { max-width:1240px;margin:0 auto;padding:0 34px 76px }
-.obhod-app .ob-header { border-bottom:1px solid var(--ob-line-soft);background:var(--ob-card);position:sticky;top:0;z-index:30 }
+.obhod-app .ob-header { border-bottom:1px solid var(--ob-line-soft);background:var(--ob-bg);position:sticky;top:0;z-index:30 }
 .obhod-app .ob-mark { width:38px;height:38px;display:grid;place-items:center;border-radius:11px;background:var(--ob-tint);color:var(--ob-accent);border:1px solid color-mix(in srgb,var(--ob-accent) 18%,transparent);flex:none }
 .obhod-app .ob-mark svg { width:26px;height:26px;display:block }
 .obhod-app .ob-brand-title { font-size:19px;line-height:1.1;font-weight:760;letter-spacing:-.035em }
@@ -69,14 +77,12 @@ to { opacity:1;transform:none }
 .obhod-app details.ob-accordion { border:1px solid var(--ob-border);background:var(--ob-card);border-radius:13px;overflow:hidden }
 .obhod-app details.ob-accordion>summary { list-style:none;display:flex;align-items:center;justify-content:space-between;gap:12px;cursor:pointer;padding:15px 18px;font-weight:700 }
 .obhod-app details.ob-accordion>summary::-webkit-details-marker { display:none }
-.obhod-app details.ob-accordion>summary::after { content:"⌄";color:var(--ob-muted);font-size:19px;font-weight:400;flex:none }
-.obhod-app details.ob-accordion[open]>summary::after { transform:rotate(180deg) }
 .obhod-app .ob-accordion-body { border-top:1px solid var(--ob-line-soft);padding:17px 18px }
 .obhod-app .ob-update-summary-main { display:flex;align-items:center;gap:10px;min-width:0;flex:1 1 auto;flex-wrap:wrap }
 .obhod-app .ob-update-summary-main strong { font-size:13px;font-weight:720;white-space:nowrap }
 .obhod-app .ob-update-badge { margin-left:auto;flex:none }
 .obhod-app .ob-counter { border:1px solid var(--ob-border);border-radius:99px;color:var(--ob-muted);padding:4px 9px;font-size:10.5px;font-weight:650;white-space:nowrap }
-.obhod-app .ob-badge-green { color:var(--ob-accent);background:var(--ob-tint);border-color:transparent }
+.obhod-app .ob-badge-green { color:var(--ob-success);background:var(--ob-tint);border-color:transparent }
 .obhod-app .ob-field { display:block;min-width:0 }
 .obhod-app .ob-label { display:block;margin-bottom:6px;font-weight:650;font-size:11.8px;color:var(--ob-text) }
 .obhod-app input[type="text"], .obhod-app input[type="search"], .obhod-app input[type="url"], .obhod-app select, .obhod-app textarea, .obhod-app input[type="number"] { width:100%;min-width:0;min-height:38px;padding:9px 11px;border:1px solid var(--ob-border);border-radius:9px;background:var(--ob-field);color:var(--ob-text);outline:none }
@@ -129,8 +135,6 @@ to { opacity:1;transform:none }
 .obhod-app .ob-domain-accordion { border:1px solid var(--ob-border);border-radius:10px;background:var(--ob-field);min-width:0;overflow:hidden }
 .obhod-app .ob-domain-accordion>summary { cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:8px;list-style:none;padding:12px 14px;font-weight:650;font-size:12px }
 .obhod-app .ob-domain-accordion>summary::-webkit-details-marker { display:none }
-.obhod-app .ob-domain-accordion>summary::after { content:"⌄";color:var(--ob-muted);font-size:17px;flex:none }
-.obhod-app .ob-domain-accordion[open]>summary::after { transform:rotate(180deg) }
 .obhod-app .ob-accordion-body { padding:14px;border-top:1px solid var(--ob-border);display:grid;gap:10px }
 .obhod-app .ob-domain-accordion textarea { font-size:12px;line-height:1.5 }
 .obhod-app .ob-domain-undo { display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:10px 13px;border:1px solid var(--ob-accent);border-radius:9px;background:var(--ob-tint);margin-top:12px;font-size:12px }
@@ -198,7 +202,7 @@ to { opacity:1;transform:none }
 .obhod-app .ob-brand-title { display: block; }
 .obhod-app .ob-header-status { justify-content: flex-end; min-width: 0; }
 .obhod-app .ob-status::before { content: ''; width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; background: var(--ob-faint); }
-.obhod-app .ob-status.is-running::before { background: var(--ob-accent); box-shadow: 0 0 0 4px var(--ob-tint); }
+.obhod-app .ob-status.is-running::before { background: var(--ob-success); box-shadow: 0 0 0 4px var(--ob-tint); }
 .obhod-app .ob-live-route { display: flex; align-items: center; gap: 8px; max-width: 230px; min-width: 0; }
 .obhod-app .ob-live-route-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .obhod-app .ob-live-delay { flex-shrink: 0; font-variant-numeric: tabular-nums; }
@@ -240,7 +244,6 @@ to { opacity:1;transform:none }
 .obhod-app .ob-list-settings .ob-switch-row { padding-top: 0; }
 .obhod-app .ob-button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; height: auto; line-height: 1.4; text-align: center; white-space: normal; }
 .obhod-app .ob-header .ob-button { min-height: 30px; padding: 5px 10px; }
-.obhod-app .ob-theme-button { width: 35px; min-height: 35px; padding: 0; font-size: 18px; color: var(--ob-muted); }
 .obhod-app .ob-inline-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .obhod-app .ob-section-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
 .obhod-app .ob-section-toolbar h3 { font-size: 14px; margin-bottom: 5px; }
@@ -269,16 +272,12 @@ to { opacity:1;transform:none }
 .obhod-app .ob-import { border: 1px solid var(--ob-border); border-radius: 13px; overflow: hidden; background: var(--ob-card); }
 .obhod-app .ob-import > summary { cursor: pointer; display: flex; align-items: center; justify-content: space-between; padding: 15px 18px; font-weight: 700; list-style: none; }
 .obhod-app .ob-import > summary::-webkit-details-marker { display: none; }
-.obhod-app .ob-import > summary::after { content: '⌄'; color: var(--ob-muted); font-size: 19px; }
-.obhod-app .ob-import[open] > summary::after { transform: rotate(180deg); }
 .obhod-app .ob-import > .ob-card { border: 0; border-top: 1px solid var(--ob-line-soft); border-radius: 0; }
 .obhod-app .ob-import-hint { padding: 0 20px 17px; }
 .obhod-app .ob-preset-groups { display: grid; gap: 9px; }
 .obhod-app .ob-preset-group { margin: 0; min-width: 0; }
 .obhod-app .ob-group-count { margin-left: auto; font-size: 11px; color: var(--ob-muted); font-weight: 450; }
 .obhod-app .ob-group-count.has-selection { color: var(--ob-accent); }
-.obhod-app .ob-preset-group > summary::after { content: '⌄'; color: var(--ob-muted); font-size: 17px; }
-.obhod-app .ob-preset-group[open] > summary::after { transform: rotate(180deg); }
 .obhod-app .ob-preset { margin: 0; }
 .obhod-app .ob-preset span { overflow-wrap: anywhere; }
 .obhod-app .ob-preset.is-disabled { opacity: .45; cursor: default; }
@@ -307,14 +306,12 @@ to { opacity:1;transform:none }
 .obhod-app .ob-diagnostic-row strong { font-weight: 600; overflow-wrap: anywhere; }
 .obhod-app .ob-diagnostic-row p { margin-top: 7px; }
 .obhod-app .ob-diagnostic-rows > .ob-note { grid-column: 1/-1; margin-bottom: 0; }
-.obhod-app .ob-check-ok { color: var(--ob-accent); font-weight: 800; }
+.obhod-app .ob-check-ok { color: var(--ob-success); font-weight: 800; }
 .obhod-app .ob-check-fail { color: var(--ob-danger); font-weight: 800; }
 .obhod-app .ob-update-details { padding: 0; overflow: hidden; }
 .obhod-app .ob-update-details > summary { display: flex; align-items: center; gap: 10px; padding: 15px 18px; cursor: pointer; list-style: none; }
 .obhod-app .ob-update-details > summary::-webkit-details-marker { display: none; }
 .obhod-app .ob-update-details > summary::before { content: '↻'; color: var(--ob-accent); font-size: 18px; }
-.obhod-app .ob-update-details > summary::after { content: '⌄'; color: var(--ob-muted); font-size: 19px; }
-.obhod-app .ob-update-details[open] > summary::after { transform: rotate(180deg); }
 .obhod-app .ob-update-summary-main { flex: 1 1 auto; }
 .obhod-app .ob-update-summary-main > strong + strong { color: var(--ob-muted); font-size: 11.5px; font-weight: 450; }
 .obhod-app .ob-update-summary-message { color: var(--ob-muted); font-size: 11.5px; overflow-wrap: anywhere; }
@@ -322,6 +319,19 @@ to { opacity:1;transform:none }
 .obhod-app .ob-update-badge.is-error { color: var(--ob-danger); background: transparent; }
 .obhod-app .ob-update-body { border-top: 1px solid var(--ob-line-soft); padding: 17px 18px; }
 .obhod-app .ob-update-body .ob-inline-actions { margin: 12px 0; }
+/* A single, font-independent disclosure mark using the native muted text colour. */
+.obhod-app .ob-accordion > summary::after,
+.obhod-app .ob-import > summary::after,
+.obhod-app .ob-preset-group > summary::after,
+.obhod-app .ob-update-details > summary::after {
+  content: ''; display: inline-block; flex: 0 0 7px; width: 7px; height: 7px;
+  color: var(--ob-muted); border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor;
+  margin: -3px 2px 0 6px; transform: rotate(45deg); transition: transform .15s ease;
+}
+.obhod-app .ob-accordion[open] > summary::after,
+.obhod-app .ob-import[open] > summary::after,
+.obhod-app .ob-preset-group[open] > summary::after,
+.obhod-app .ob-update-details[open] > summary::after { transform: rotate(225deg); margin-top: 3px; }
 .obhod-app .ob-operation-notice { padding: 14px; margin-bottom: 16px; border: 1px solid var(--ob-accent); border-radius: 10px; background: var(--ob-tint); overflow-wrap: anywhere; }
 .obhod-app .ob-operation-notice .ob-help { margin-top: 5px; }
 .obhod-app .ob-setup:empty { display: none; }
@@ -345,7 +355,6 @@ to { opacity:1;transform:none }
 .obhod-app .ob-brand .ob-help { display: none; }
 .obhod-app .ob-mark { width: 32px; height: 32px; }
 .obhod-app .ob-header .ob-button { font-size: 11px; padding: 7px 9px; }
-.obhod-app .ob-header .ob-theme-button { font-size: 16px; }
 .obhod-app .ob-status { gap: 0; }
 .obhod-app .ob-status::before { width: 8px; height: 8px; }
 .obhod-app .ob-page-title { font-size: 23px; }
