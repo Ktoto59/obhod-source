@@ -58,9 +58,9 @@ remove_core
 exec /bin/opkg-real --conf /etc/opkg.conf --offline-root / "$@"
 """)
         versions=json.loads(run('/usr/libexec/obhod-rpc','call','coreVersions',input='{}'))['versions']
-        assert len(versions)==6 and {v['profile'] for v in versions}=={'full','lite'}
-        assert {v['value'] for v in versions}=={'1.13.21-obhod.2','1.13.21-obhod.3','1.13.21-obhod.4'}
-        assert all(v['recommended']==(v['value']=='1.13.21-obhod.4') for v in versions)
+        assert len(versions)==8 and {v['profile'] for v in versions}=={'full','lite'}
+        assert {v['value'] for v in versions}=={'1.13.21-obhod.2','1.13.21-obhod.3','1.13.21-obhod.4','1.13.21-obhod.5'}
+        assert all(v['recommended']==(v['value']=='1.13.21-obhod.5') for v in versions)
         if manager=='apk': (lab/'etc/apk/arch').write_text('x86_64\n')
         run('/bin/sh','/tmp/remove.sh',ok=False)
         assert not (lab/'tmp/control-calls').exists()

@@ -118,7 +118,7 @@ exec /bin/opkg-real --conf /etc/opkg.conf --offline-root / "$@"
     print('PASS: native opkg ENOSPC at ELF write, SIGKILL/SIGTERM, inherited lease, persistent configuration recovery and idempotent retry',flush=True)
 
 
-def main(packages, previous, rollback_packages=None, faults=False):
+def main(packages, previous, rollback_packages=None, faults=False, report=None):
     catalog = json.loads((packages/'packages.json').read_text())
     old = json.loads((previous/'packages.json').read_text())
     rollback_rows=json.loads((rollback_packages/'rollback-packages.json').read_text())['packages'] if rollback_packages else []
@@ -185,7 +185,9 @@ def main(packages, previous, rollback_packages=None, faults=False):
                 native=lab/'bin/opkg';native.rename(lab/'bin/opkg-real')
                 native.write_text('#!/bin/sh\nexec /bin/opkg-real --conf /etc/opkg.conf --offline-root / "$@"\n');native.chmod(0o755)
                 helper=lab/'usr/libexec/obhod/core-opkg.uc';helper.parent.mkdir(parents=True,exist_ok=True)
-                shutil.copyfile(ROOT/'openwrt/obhod/files/usr/libexec/obhod/core-opkg.uc',helper)
+                helper_source=packages/'core-opkg.uc'
+                if not helper_source.exists():helper_source=ROOT/'openwrt/obhod/files/usr/libexec/obhod/core-opkg.uc'
+                shutil.copyfile(helper_source,helper)
                 def install(name, reinstall=False):
                     run('chroot',lab,'ucode','/usr/libexec/obhod/core-opkg.uc','/tmp/'+name)
                 run('chroot',lab,'/bin/opkg','compare-versions',p['version'],'>',older['version'])
@@ -226,7 +228,7 @@ def main(packages, previous, rollback_packages=None, faults=False):
                 'rollbackPackageVersion':rollback_package['version'],'modifiedConfigurationsAndReinstall':rollback})
             print('PASS:',p['name'],'metadata, payload, QEMU version/check/capabilities, .4 -> .5; ROLLBACK:',rollback,
                 rollback_package['version'],'modified config and reinstall',flush=True)
-    (packages/'verification.json').write_text(json.dumps({'environment':'WSL x86 OpenWrt chroot; virtual dependencies; no procd hooks; target ELF via QEMU','packages':records,'failures':failures},indent=2)+'\n')
+    (report or packages/'verification.json').write_text(json.dumps({'environment':'WSL x86 OpenWrt chroot; virtual dependencies; no procd hooks; target ELF via QEMU','packages':records,'failures':failures},indent=2)+'\n')
     assert not failures, f'{len(failures)} package rollback gates failed; see verification.json'
 
 
@@ -235,4 +237,5 @@ if __name__ == '__main__':
     parser.add_argument('--packages',type=Path,required=True);parser.add_argument('--previous',type=Path,required=True)
     parser.add_argument('--rollback-packages',type=Path)
     parser.add_argument('--faults',action='store_true')
-    args=parser.parse_args();main(args.packages.resolve(),args.previous.resolve(),args.rollback_packages.resolve() if args.rollback_packages else None,args.faults)
+    parser.add_argument('--report',type=Path)
+    args=parser.parse_args();main(args.packages.resolve(),args.previous.resolve(),args.rollback_packages.resolve() if args.rollback_packages else None,args.faults,args.report.resolve() if args.report else None)

@@ -25,6 +25,12 @@ select_compat_core() {
 			compat_revision=${compat_version##*-}; compat_revision=${compat_revision#r}
 			[ "$compat_revision" -ge "$(( ${compat_current##*.} * 100 ))" ] || return 0;;
 		esac
+		if [ "$manager" = opkg ]; then
+			compat_installed_version=$(opkg status "$(find_core)" | awk '$1=="Version:" {print $2;exit}')
+			case "$compat_installed_version" in 1.13.21-200|1.13.21-300|1.13.21-400|1.13.21-401|1.13.21-500)
+				[ "${compat_version##*-}" -ge "${compat_installed_version##*-}" ] || return 0;;
+			esac
+		fi
 	fi
 	compat=1
 	compat_plan_installed=$compat_installed

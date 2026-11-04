@@ -38,7 +38,7 @@ exec /bin/opkg-real --conf /etc/opkg.conf --offline-root / "$@"
 ''');native.chmod(0o755)
         config=lab/'etc/opkg.conf';config.write_text(config.read_text().replace('option check_signature','# offline fixture')+'\nsrc fixture file:///tmp/repo\n')
         def package(name,version):
-            binary=f'#!/bin/sh\nif [ "$1" = version ]; then echo "sing-box version {"1.13.21-obhod.5" if version.endswith("500") else "1.13.21-obhod.4" if version.endswith("400") else "1.13.21-obhod.3" if version.endswith("300") else "1.13.21-obhod.2" if version.endswith("200") else "1.13.21"}"; else echo dns-pool-v1; echo redirect-table-31bit; fi\n'
+            binary=f'#!/bin/sh\nif [ "$1" = version ]; then echo "sing-box version {"1.13.21-obhod.5" if version.endswith("500") else "1.13.21-obhod.4" if version.endswith(("400","401")) else "1.13.21-obhod.3" if version.endswith("300") else "1.13.21-obhod.2" if version.endswith("200") else "1.13.21"}"; else echo dns-pool-v1; echo redirect-table-31bit; fi\n'
             control=f'Package: {name}\nVersion: {version}\nArchitecture: all\nInstalled-Size: 10000\nDescription: Isolated fixture\n'
             if name.endswith('tiny'):control+='Provides: sing-box\nConflicts: sing-box\n'
             data=builder.tar_bytes({'debian-binary':(b'2.0\n',0o644),'control.tar.gz':(builder.tar_bytes({'control':(control.encode(),0o644)}),0o644),
@@ -62,7 +62,7 @@ exec /bin/opkg-real --conf /etc/opkg.conf --offline-root / "$@"
         stub('bin/ubus',"echo '{}'")
         stub('sbin/ip','exit 0')
         stub('bin/df',"printf 'Filesystem 1024-blocks Used Available Capacity Mounted\\nroot 1048576 0 1048576 0%% /tmp\\n'")
-        stub('bin/uclient-fetch','''while [ "$#" -gt 0 ]; do case "$1" in -O) output=$2;shift;; https://*/1) file=/tmp/new.ipk;; https://*/2) file=/tmp/older.ipk;; https://*/3) file=/tmp/four.ipk;; https://*/5) file=/tmp/five.ipk;; esac;shift;done
+        stub('bin/uclient-fetch','''while [ "$#" -gt 0 ]; do case "$1" in -O) output=$2;shift;; https://*/1) file=/tmp/new.ipk;; https://*/2) file=/tmp/older.ipk;; https://*/3) file=/tmp/four.ipk;; https://*/4) file=/tmp/compat-four.ipk;; https://*/5) file=/tmp/five.ipk;; esac;shift;done
 cp "$file" "$output"''')
         (lab/'proc/meminfo').write_text('MemTotal: 262144 kB\nMemAvailable: 196608 kB\n')
         (lab/'tmp/test.sh').write_text('''#!/bin/sh
@@ -103,6 +103,21 @@ install_compat_core
         (lab/'tmp/reject-core').unlink()
         inside('/bin/sh','/tmp/test.sh','1.13.21-obhod.4')
         assert '1.13.21-obhod.4' in inside('/usr/bin/sing-box','version')
+        compat_four,_=package('sing-box','1.13.21-401');(lab/'tmp/compat-four.ipk').write_bytes(compat_four)
+        catalog['packages'][-1]={**catalog['packages'][-1],'version':'1.13.21-401',
+            'url':'https://api.github.com/repos/Ktoto59/obhod-releases/releases/assets/4',
+            'sha256':hashlib.sha256(compat_four).hexdigest(),'bytes':len(compat_four)}
+        (lab/'tmp/catalog.json').write_text(json.dumps(catalog))
+        inside('/bin/sh','/tmp/test.sh','1.13.21-obhod.4')
+        assert '1.13.21-401' in inside('/bin/opkg','status','sing-box'), 'Matching binary .4 still migrates package metadata 400 -> 401'
+        (lab/'tmp/compat-four.ipk').unlink()
+        inside('/bin/sh','/tmp/test.sh','1.13.21-obhod.4')
+        (lab/'tmp/compat-four.ipk').write_bytes(compat_four)
+        catalog['packages'][-1]['version']='1.13.21-400'
+        (lab/'tmp/catalog.json').write_text(json.dumps(catalog))
+        inside('/bin/sh','/tmp/test.sh',ok=False)
+        assert '1.13.21-401' in inside('/bin/opkg','status','sing-box'), 'A stale catalog never automatically downgrades package metadata 401 -> 400'
+        catalog['packages'][-1]['version']='1.13.21-401'
         five,_=package('sing-box','1.13.21-500');(lab/'tmp/five.ipk').write_bytes(five)
         catalog['version']='1.13.21-obhod.5'
         catalog['packages'].append({**catalog['packages'][0], 'version':'1.13.21-500',

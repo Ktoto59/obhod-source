@@ -134,10 +134,11 @@ def main():
                          (ROOT / 'openwrt/obhod/files/usr/libexec/obhod/core-opkg.uc', 'core-opkg.uc'),
                          (ROOT / 'openwrt/obhod/files/usr/share/obhod/core-catalog.json', 'core-catalog.json'),
                          (ROOT / 'openwrt/presets.tsv', 'presets.tsv'), (ROOT / 'openwrt/README.md', 'README.md'),
+                         (ROOT / f'openwrt/release-notes/openwrt-{VERSION}.md', 'RELEASE-NOTES.md'),
                          (ROOT / 'LICENSE', 'LICENSE'), (ROOT / 'NOTICE', 'NOTICE')]:
         shutil.copyfile(source, destination / name)
     names = [f'obhod_{VERSION}-1_all.ipk', f'luci-app-obhod_{VERSION}-1_all.ipk',
-             f'obhod-{VERSION}-r1.apk', f'luci-app-obhod-{VERSION}-r1.apk', 'install.sh', 'installer-plan.uc', 'package-lib.sh', 'core-compat.sh', 'core-select.uc', 'core-opkg.uc', 'core-catalog.json', 'presets.tsv', 'README.md', 'LICENSE', 'NOTICE']
+             f'obhod-{VERSION}-r1.apk', f'luci-app-obhod-{VERSION}-r1.apk', 'install.sh', 'installer-plan.uc', 'package-lib.sh', 'core-compat.sh', 'core-select.uc', 'core-opkg.uc', 'core-catalog.json', 'presets.tsv', 'README.md', 'RELEASE-NOTES.md', 'LICENSE', 'NOTICE']
     (destination / 'SHA256SUMS').write_text(''.join(hashlib.sha256((destination / name).read_bytes()).hexdigest() + '  ' + name + '\n' for name in names))
     archive_files = {name: ((destination / name).read_bytes(), 0o755 if name == 'install.sh' else 0o644) for name in names + ['SHA256SUMS']}
     (destination / f'obhod-openwrt-{VERSION}.tar.gz').write_bytes(tar_bytes(archive_files))

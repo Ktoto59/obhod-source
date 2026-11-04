@@ -502,7 +502,7 @@ else echo '{}'; fi
 def installer_tests():
     directory = LAB / 'tmp/installer'
     directory.mkdir()
-    for name in ['install.sh', 'installer-plan.uc', 'package-lib.sh', 'core-compat.sh', 'core-select.uc', 'core-opkg.uc', 'core-catalog.json', 'presets.tsv', 'SHA256SUMS', 'LICENSE', 'NOTICE', 'README.md', 'obhod-0.1.19-r1.apk',
+    for name in ['install.sh', 'installer-plan.uc', 'package-lib.sh', 'core-compat.sh', 'core-select.uc', 'core-opkg.uc', 'core-catalog.json', 'presets.tsv', 'SHA256SUMS', 'LICENSE', 'NOTICE', 'README.md', 'RELEASE-NOTES.md', 'obhod-0.1.19-r1.apk',
                  'luci-app-obhod-0.1.19-r1.apk', 'obhod_0.1.19-1_all.ipk', 'luci-app-obhod_0.1.19-1_all.ipk',
                  'obhod-openwrt-0.1.19.tar.gz','install-online.sh']:
         shutil.copyfile(PACKAGES / name, directory / name)
@@ -854,6 +854,14 @@ esac
     while not (LAB/'tmp/update-rpcd').exists() and time.monotonic()<deadline:time.sleep(0.05)
     assert (LAB/'tmp/update-rpcd').read_text().splitlines()==['reload']
     result,message=job('check'); assert result=='current', (result,message)
+    configs={name:(LAB/name).read_bytes() for name in ['etc/config/obhod','etc/config/dhcp']}
+    for version in [PREVIOUS_VERSION,'0.1.19']:
+        inside('/usr/bin/apk','--no-network','--no-scripts','add','--allow-untrusted',
+            f'/tmp/obhod-{version}-r1.apk',f'/tmp/luci-app-obhod-{version}-r1.apk')
+        assert (LAB/'usr/share/obhod/version').read_text().strip()==version
+        assert state.read_bytes()==previous
+        assert all((LAB/name).read_bytes()==data for name,data in configs.items())
+    print(f'PASS: real APK application rollback 0.1.19 -> {PREVIOUS_VERSION} -> 0.1.19 preserves profile and UCI/DNS')
     print(f'PASS: native APK self-update from {PREVIOUS_VERSION}, profile preservation, deferred rpcd reload, version check and unsafe metadata/archive rejection')
 
 
@@ -964,9 +972,16 @@ exec /bin/opkg-real --conf /etc/opkg.conf --offline-root / "$@"
         assert result=='done', (result,(lab/'var/run/obhod/update-log').read_text()[-2500:])
         assert profile.read_text()=='{"saved":"opkg profile"}'
         assert (lab/'usr/share/obhod/version').read_text().strip()=='0.1.19'
+        configs={name:(lab/name).read_bytes() for name in ['etc/config/obhod','etc/config/dhcp']}
+        for version in [PREVIOUS_VERSION,'0.1.19']:
+            inside_lab('/bin/opkg','--force-downgrade','install',f'/tmp/obhod_{version}-1_all.ipk',f'/tmp/luci-app-obhod_{version}-1_all.ipk')
+            assert (lab/'usr/share/obhod/version').read_text().strip()==version
+            assert profile.read_text()=='{"saved":"opkg profile"}'
+            assert all((lab/name).read_bytes()==data for name,data in configs.items())
     print('PASS: real OpenWrt 24.10 opkg installation of both IPK packages')
     print('PASS: native opkg tiny/full switching, verified predownload, failed-install rollback and tamper rejection')
     print(f'PASS: native opkg self-update from {PREVIOUS_VERSION} preserves the saved profile')
+    print(f'PASS: real opkg application rollback 0.1.19 -> {PREVIOUS_VERSION} -> 0.1.19 preserves profile and UCI/DNS')
 
 
 if __name__ == '__main__':
