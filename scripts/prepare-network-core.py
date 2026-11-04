@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parent.parent
 REVISIONS = {'sing-box': '628cb31ffa79cffffd34c2f9cde6cae044e4fc12',
              'sing-tun': 'f3b42b8b8e061ef849213a776d9fcf3d5f6ea239',
              'sing': '87773cc9c5b2a4e4fc05cbd2db304ba23ca13515'}
-VERSION = '1.13.21-obhod.4'
+VERSION = '1.13.21-obhod.5'
 
 
 def prepare(box, tun, sing, destination):

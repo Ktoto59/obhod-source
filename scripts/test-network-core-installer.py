@@ -16,7 +16,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix='obhod-core-installer-') as temporary:
         lab=Path(temporary);subprocess.run(['tar','-xzf',archive,'-C',lab],check=True)
         base=lab/'usr/libexec/obhod';base.mkdir(parents=True)
-        for name in ['core-compat.sh','core-select.uc','package-lib.sh']:
+        for name in ['core-compat.sh','core-select.uc','core-opkg.uc','package-lib.sh']:
             shutil.copyfile(ROOT/'openwrt/obhod/files/usr/libexec/obhod'/name,base/name)
         (lab/'etc/obhod').mkdir();original=b'{"profile":{"tunnels":[{"name":"Fixture","password":"preserve"}]}}'
         (lab/'etc/obhod/settings.json').write_bytes(original)
@@ -92,6 +92,16 @@ echo "SELECTED=$compat"
         (lab/'tmp/core.apk').write_bytes(artifact)
         for core in ['sing-box', 'sing-box-tiny']:
             assert 'SELECTED=1' in run(core, 'install', '1.13.21-obhod.4')
+        (lab/'tmp/version').write_text('1.13.21-obhod.5')
+        assert 'SELECTED=0' in run(), 'A stale .4 catalog must not downgrade .5'
+        for package in catalog['packages']:
+            package['version']='1.13.21-r500'
+        catalog['version']='1.13.21-obhod.5';catalog_path.write_text(json.dumps(catalog))
+        assert 'SELECTED=1' in run(), 'The .5 catalog permits same-version flavor changes'
+        (lab/'tmp/version').write_text('1.13.21-obhod.4')
+        assert 'SELECTED=1' in run(), 'The .4 core can upgrade automatically to .5'
+        for core in ['sing-box', 'sing-box-tiny']:
+            assert 'SELECTED=1' in run(core, 'install', '1.13.21-obhod.5')
         assert 'SELECTED=0' in run('sing-box', '', '1.13.21-obhod.999')
         for package in catalog['packages']:
             package['version']='1.13.21-r300'

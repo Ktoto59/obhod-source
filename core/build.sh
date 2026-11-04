@@ -13,5 +13,5 @@ cd "$prepared/source"
 name="sing-box-$GOOS-$GOARCH-$4"
 [ "$GOOS" != windows ] || name="$name.exe"
 go build -mod=readonly -trimpath -buildvcs=false -tags "$tags" \
-    -ldflags '-s -w -checklinkname=0 -X github.com/sagernet/sing-box/constant.Version=1.13.21-obhod.4' \
+    -ldflags '-s -w -checklinkname=0 -X github.com/sagernet/sing-box/constant.Version=1.13.21-obhod.5' \
     -o "$output/$name" ./cmd/sing-box

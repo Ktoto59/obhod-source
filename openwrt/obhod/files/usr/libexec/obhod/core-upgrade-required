@@ -26,9 +26,9 @@ core=$(find_core)
 [ -n "$core" ] || die 'Не найден установленный пакет ядра. Установите совместимое ядро во вкладке «Протоколы».'
 compat_catalog=/usr/share/obhod/core-catalog.json
 compat_selector="$BASE/core-select.uc"
-compat_requested=1.13.21-obhod.4
+compat_requested=1.13.21-obhod.5
 select_compat_core
-[ "$compat" = 1 ] || die 'Для этой архитектуры нет обязательного ядра .4. Установите совместимое ядро вручную.'
+[ "$compat" = 1 ] || die 'Для этой архитектуры нет обязательного ядра .5. Установите совместимое ядро вручную.'
 installed_bytes=$compat_plan_installed
 download_bytes=$compat_plan_download
 check_budget

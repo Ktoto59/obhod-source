@@ -39,7 +39,7 @@ prepare() {
 	# fixed ordering; older 1.12 cores select destinations in nftables already.
 	if { [ "$1" -gt 1 ] || [ "$2" -ge 13 ]; } && ! /usr/bin/sing-box obhod-capabilities 2>/dev/null | grep -qx kernel-route-set-v1; then
 		/usr/libexec/obhod/core-upgrade-required > "$RUN/core-upgrade-log" 2>&1 || {
-			error 'Не удалось установить обязательное ядро .4. Профиль сохранён; проверьте место, интернет и журнал core-upgrade-log.'; return 1;
+			error 'Не удалось установить обязательное ядро .5. Профиль сохранён; проверьте место, интернет и журнал core-upgrade-log.'; return 1;
 		}
 	fi
 	ucode /usr/libexec/obhod/kernel-route.uc "$RUN/config.json" || {

@@ -20,7 +20,8 @@ ROOT = Path(__file__).resolve().parent.parent
 TOOLS = ROOT / '.tmp/openwrt-tools'
 LAB = Path('/tmp/obhod-openwrt-lab')
 APK = TOOLS / 'sbin/apk.static'
-PACKAGES = ROOT / 'release/openwrt'
+PACKAGES = Path(os.environ.get('OBHOD_TEST_PACKAGES', ROOT / 'release/openwrt'))
+PREVIOUS_VERSION = os.environ.get('OBHOD_TEST_PREVIOUS_APP', '0.1.4')
 
 
 def run(args, **kwargs):
@@ -74,7 +75,7 @@ def prepare():
     if database.exists():
         shutil.rmtree(database)
     inside('/usr/bin/apk', '--initdb', '--no-network', '--no-scripts', 'add', '--allow-untrusted', '/tmp/testdeps.apk',
-           '/tmp/obhod-0.1.18-r1.apk', '/tmp/luci-app-obhod-0.1.18-r1.apk')
+           '/tmp/obhod-0.1.19-r1.apk', '/tmp/luci-app-obhod-0.1.19-r1.apk')
     assert (LAB / 'www/luci-static/resources/view/obhod/overview.js').exists()
     assert (LAB / 'www/luci-static/resources/obhod/overview.css').exists()
     assert (LAB / 'etc/obhod').stat().st_mode & 0o777 == 0o700
@@ -501,8 +502,9 @@ else echo '{}'; fi
 def installer_tests():
     directory = LAB / 'tmp/installer'
     directory.mkdir()
-    for name in ['install.sh', 'installer-plan.uc', 'package-lib.sh', 'core-compat.sh', 'core-select.uc', 'core-catalog.json', 'presets.tsv', 'SHA256SUMS', 'LICENSE', 'NOTICE', 'README.md', 'obhod-0.1.18-r1.apk',
-                 'luci-app-obhod-0.1.18-r1.apk', 'obhod_0.1.18-1_all.ipk', 'luci-app-obhod_0.1.18-1_all.ipk']:
+    for name in ['install.sh', 'installer-plan.uc', 'package-lib.sh', 'core-compat.sh', 'core-select.uc', 'core-opkg.uc', 'core-catalog.json', 'presets.tsv', 'SHA256SUMS', 'LICENSE', 'NOTICE', 'README.md', 'obhod-0.1.19-r1.apk',
+                 'luci-app-obhod-0.1.19-r1.apk', 'obhod_0.1.19-1_all.ipk', 'luci-app-obhod_0.1.19-1_all.ipk',
+                 'obhod-openwrt-0.1.19.tar.gz','install-online.sh']:
         shutil.copyfile(PACKAGES / name, directory / name)
     # Resource fixtures are confined to this disposable chroot.
     (LAB / 'proc').mkdir(exist_ok=True)
@@ -610,7 +612,7 @@ def installer_tests():
     assert state.read_text() == '{"existing":"profile"}'
     assert inside('/bin/sh', '-c', 'test -f /var/run/obhod/ready') == ''
     calls = (LAB / 'tmp/installer-calls').read_text()
-    assert 'apk update' in calls and 'apk --no-network add --allow-untrusted ./obhod-0.1.18-r1.apk' in calls
+    assert 'apk update' in calls and 'apk --no-network add --allow-untrusted ./obhod-0.1.19-r1.apk' in calls
     (LAB / 'etc/apk/world').unlink()
     (LAB / 'etc/openwrt_release').write_text("DISTRIB_ID='OpenWrt'\nDISTRIB_RELEASE='24.10.4'\n")
     opkg = LAB / 'bin/opkg'
@@ -620,8 +622,8 @@ def installer_tests():
     (LAB/'var/opkg-lists/fixture').write_text('Package: sing-box\nInstalled-Size: 33554432\nSize: 8388608\n\n')
     inside('/bin/sh', '/tmp/installer/install.sh', '--yes')
     calls = (LAB / 'tmp/installer-calls').read_text()
-    assert 'opkg update' in calls and 'opkg install ./obhod_0.1.18-1_all.ipk ./luci-app-obhod_0.1.18-1_all.ipk' in calls
-    shutil.copyfile(PACKAGES / 'obhod-openwrt-0.1.18.tar.gz', LAB / 'tmp/online-bundle.tar.gz')
+    assert 'opkg update' in calls and 'opkg install ./obhod_0.1.19-1_all.ipk ./luci-app-obhod_0.1.19-1_all.ipk' in calls
+    shutil.copyfile(PACKAGES / 'obhod-openwrt-0.1.19.tar.gz', LAB / 'tmp/online-bundle.tar.gz')
     script = (PACKAGES / 'install-online.sh').read_text().replace("BUNDLE_API_URL=''", "BUNDLE_API_URL='https://api.github.com/repos/example/releases/assets/1'")
     (LAB / 'tmp/online-installer.sh').write_text(script)
     downloader = '#!/bin/sh\nwhile [ "$#" -gt 0 ]; do case "$1" in --output|-O) cp /tmp/online-bundle.tar.gz "$2"; exit $?;; esac; shift; done\nexit 1\n'
@@ -638,7 +640,7 @@ def installer_tests():
     result = run(['chroot', LAB, '/bin/sh', '/tmp/online-installer.sh', '--yes'])
     assert result.returncode != 0 and calls_file.read_text() == before_download
     calls = calls_file.read_text()
-    with (directory / 'obhod_0.1.18-1_all.ipk').open('ab') as target:
+    with (directory / 'obhod_0.1.19-1_all.ipk').open('ab') as target:
         target.write(b'tampered')
     result = run(['chroot', LAB, '/bin/sh', '/tmp/installer/install.sh'])
     assert result.returncode != 0
@@ -773,14 +775,14 @@ def update_tests():
     # Bootstrap the new updater onto the previously released app, as on a router.
     shutil.copyfile(APK, LAB/'usr/bin/apk'); (LAB/'usr/bin/apk').chmod(0o755)
     (LAB/'etc/apk/world').write_text('obhod-testdeps\n')
-    for name in ['obhod-0.1.4-r1.apk','luci-app-obhod-0.1.4-r1.apk']:
+    for name in [f'obhod-{PREVIOUS_VERSION}-r1.apk',f'luci-app-obhod-{PREVIOUS_VERSION}-r1.apk']:
         shutil.copyfile(PACKAGES/name, LAB/'tmp'/name)
-    inside('/usr/bin/apk','--no-network','--no-scripts','add','--allow-untrusted','/tmp/obhod-0.1.4-r1.apk','/tmp/luci-app-obhod-0.1.4-r1.apk')
+    inside('/usr/bin/apk','--no-network','--no-scripts','add','--allow-untrusted',f'/tmp/obhod-{PREVIOUS_VERSION}-r1.apk',f'/tmp/luci-app-obhod-{PREVIOUS_VERSION}-r1.apk')
     base = LAB/'usr/libexec/obhod'
     for name in ['update','update-metadata.uc','package-lib.sh','operation.uc']:
         shutil.copyfile(ROOT/'openwrt/obhod/files/usr/libexec/obhod'/name, base/name); (base/name).chmod(0o755)
     (LAB/'usr/share/obhod/version').parent.mkdir(parents=True,exist_ok=True)
-    (LAB/'usr/share/obhod/version').write_text('0.1.4\n')
+    (LAB/'usr/share/obhod/version').write_text(PREVIOUS_VERSION+'\n')
     (base/'control').write_text('#!/bin/sh\nprintf "%s\\n" "$1" >> /tmp/update-controls\nexit 0\n'); (base/'control').chmod(0o755)
     (LAB/'etc/init.d/rpcd').write_text('#!/bin/sh\nprintf "%s\\n" "$1" >> /tmp/update-rpcd\nexit 0\n')
     (LAB/'etc/init.d/rpcd').chmod(0o755)
@@ -808,8 +810,8 @@ esac
     previous = state.read_bytes()
     (LAB/'var/run/obhod/ready').unlink(missing_ok=True)
     (LAB/'tmp/free-flash').write_text('61000'); (LAB/'tmp/free-tmp').write_text('59000')
-    archive = (PACKAGES/'obhod-openwrt-0.1.18.tar.gz').read_bytes()
-    metadata = {'version':'0.1.18','tag':'openwrt-v0.1.18','bundleUrl':'https://api.github.com/repos/Ktoto59/obhod-releases/releases/assets/1','bundleSha256':hashlib.sha256(archive).hexdigest()}
+    archive = (PACKAGES/'obhod-openwrt-0.1.19.tar.gz').read_bytes()
+    metadata = {'version':'0.1.19','tag':'openwrt-v0.1.19','bundleUrl':'https://api.github.com/repos/Ktoto59/obhod-releases/releases/assets/1','bundleSha256':hashlib.sha256(archive).hexdigest()}
     (LAB/'tmp/update-bundle').write_bytes(archive)
     def write_metadata(data): (LAB/'tmp/update-metadata').write_text(json.dumps(data))
     def job(action):
@@ -823,7 +825,7 @@ esac
     write_metadata(metadata)
     result,message = job('check'); assert result == 'available', (result,message)
     assert state.read_bytes() == previous and not (LAB/'tmp/update-controls').exists()
-    for mutation in [{'bundleUrl':'https://example.org/evil'}, {'tag':'v0.18.0'}, {'version':'0.1.18;reboot'}, {'bundleSha256':'x'*64}]:
+    for mutation in [{'bundleUrl':'https://example.org/evil'}, {'tag':'v0.18.0'}, {'version':'0.1.19;reboot'}, {'bundleSha256':'x'*64}]:
         write_metadata({**metadata,**mutation}); result,message = job('install')
         assert result == 'error' and state.read_bytes() == previous
         assert not (LAB/'tmp/update-controls').exists()
@@ -845,14 +847,14 @@ esac
     (LAB/'tmp/update-bundle').write_bytes(archive); write_metadata(metadata)
     result,message=job('install')
     assert result=='done', (result,message,(LAB/'var/run/obhod/update-log').read_text()[-2500:])
-    assert (LAB/'usr/share/obhod/version').read_text().strip()=='0.1.18'
+    assert (LAB/'usr/share/obhod/version').read_text().strip()=='0.1.19'
     assert state.read_bytes()==previous
     # The updater releases its lock before the deferred rpcd reload finishes.
     deadline=time.monotonic()+3
     while not (LAB/'tmp/update-rpcd').exists() and time.monotonic()<deadline:time.sleep(0.05)
     assert (LAB/'tmp/update-rpcd').read_text().splitlines()==['reload']
     result,message=job('check'); assert result=='current', (result,message)
-    print('PASS: native APK self-update from 0.1.4, profile preservation, deferred rpcd reload, version check and unsafe metadata/archive rejection')
+    print(f'PASS: native APK self-update from {PREVIOUS_VERSION}, profile preservation, deferred rpcd reload, version check and unsafe metadata/archive rejection')
 
 
 def ipk_tests():
@@ -875,7 +877,7 @@ def ipk_tests():
         result = run(['chroot', lab, '/bin/opkg', '--offline-root', '/', 'install', '/tmp/testdeps.ipk'])
         assert result.returncode == 0, result.stdout + result.stderr
         result = run(['chroot', lab, '/bin/opkg', '--offline-root', '/', 'install',
-                      '/tmp/obhod_0.1.18-1_all.ipk', '/tmp/luci-app-obhod_0.1.18-1_all.ipk'])
+                      '/tmp/obhod_0.1.19-1_all.ipk', '/tmp/luci-app-obhod_0.1.19-1_all.ipk'])
         assert result.returncode == 0, result.stdout + result.stderr
         assert (lab / 'usr/libexec/rpcd/obhod').exists()
         assert (lab / 'www/luci-static/resources/obhod/core.js').exists()
@@ -944,12 +946,12 @@ exec /bin/opkg-real --conf /etc/opkg.conf --offline-root / "$@"
         assert (lab/'usr/bin/sing-box').read_text() == 'sing-box-tiny'
         assert (lab/'tmp/core-calls').read_text().count('\nremove ') == before.count('\nremove ')
         # Exercise the same self-updater with the other supported package manager.
-        inside_lab('/bin/opkg','--force-downgrade','install','/tmp/obhod_0.1.4-1_all.ipk','/tmp/luci-app-obhod_0.1.4-1_all.ipk')
+        inside_lab('/bin/opkg','--force-downgrade','install',f'/tmp/obhod_{PREVIOUS_VERSION}-1_all.ipk',f'/tmp/luci-app-obhod_{PREVIOUS_VERSION}-1_all.ipk')
         for name in ['update','update-metadata.uc','package-lib.sh','operation.uc']:
             target=lab/'usr/libexec/obhod'/name
             shutil.copyfile(ROOT/'openwrt/obhod/files/usr/libexec/obhod'/name,target); target.chmod(0o755)
         (lab/'usr/share/obhod').mkdir(parents=True,exist_ok=True)
-        (lab/'usr/share/obhod/version').write_text('0.1.4\n')
+        (lab/'usr/share/obhod/version').write_text(PREVIOUS_VERSION+'\n')
         for relative in ['bin/ubus','bin/uclient-fetch','etc/init.d/rpcd','tmp/update-metadata','tmp/update-bundle']:
             target=lab/relative; target.unlink(missing_ok=True); shutil.copyfile(LAB/relative,target)
             if relative.startswith(('bin/','etc/')): target.chmod(0o755)
@@ -961,10 +963,10 @@ exec /bin/opkg-real --conf /etc/opkg.conf --offline-root / "$@"
         result=(lab/'var/run/obhod/update-state').read_text().strip()
         assert result=='done', (result,(lab/'var/run/obhod/update-log').read_text()[-2500:])
         assert profile.read_text()=='{"saved":"opkg profile"}'
-        assert (lab/'usr/share/obhod/version').read_text().strip()=='0.1.18'
+        assert (lab/'usr/share/obhod/version').read_text().strip()=='0.1.19'
     print('PASS: real OpenWrt 24.10 opkg installation of both IPK packages')
     print('PASS: native opkg tiny/full switching, verified predownload, failed-install rollback and tamper rejection')
-    print('PASS: native opkg self-update from 0.1.4 preserves the saved profile')
+    print(f'PASS: native opkg self-update from {PREVIOUS_VERSION} preserves the saved profile')
 
 
 if __name__ == '__main__':

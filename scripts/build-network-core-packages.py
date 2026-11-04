@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -13,7 +14,7 @@ import tempfile
 import textwrap
 
 ROOT=Path(__file__).resolve().parent.parent
-VERSION='1.13.21-obhod.4'
+VERSION='1.13.21-obhod.5'
 STOCK_HASHES={
     ('mipsel_24kc','sing-box'):'9df59a6073a5e49a11894d1f837d3dcc1debe1c396434b55416bdf32929e69f4',
     ('mipsel_24kc','sing-box-tiny'):'6323a0aa122f0b9556a256c9b4f85176ec42ce947bda7c9fa4294711023edd39',
@@ -41,7 +42,15 @@ def build(binaries,stocks,apk,output,support=None):
             with tempfile.TemporaryDirectory(prefix='obhod-core-package-') as temporary:
                 work=Path(temporary);stage=work/'root';stage.mkdir()
                 if stock:subprocess.run([apk,'--allow-untrusted','extract','--destination',stage,stock],check=True,stdout=subprocess.DEVNULL)
-                else:shutil.copytree(support/arch/package,stage,dirs_exist_ok=True)
+                else:
+                    shutil.copytree(support/arch/package,stage,dirs_exist_ok=True)
+                    # NTFS and source-archive staging can lose POSIX modes.
+                    # Restore the modes captured from the verified stock APK.
+                    modes=json.loads((support/arch/(package+'-modes.json')).read_text())
+                    for name,mode in modes.items():
+                        path=stage/name
+                        assert path.resolve().is_relative_to(stage.resolve()) and 0<=mode<=0o777
+                        path.chmod(mode)
                 shutil.copyfile(binary,stage/'usr/bin/sing-box');(stage/'usr/bin/sing-box').chmod(0o755)
                 notice=stage/'usr/share/sing-box/obhod-core';notice.mkdir(parents=True,exist_ok=True)
                 shutil.copyfile(ROOT/'LICENSES/GPL-3.0-only.txt',notice/'COPYING')
@@ -50,33 +59,48 @@ def build(binaries,stocks,apk,output,support=None):
                     'sing v0.8.14: 87773cc9c5b2a4e4fc05cbd2db304ba23ca13515.\n'
                     'Patches: 31-bit table IDs, bounded DNS pools, DNS RCODE preservation, DNS UDP isolation, ICMP logging, kernel destination selection before NFQUEUE.\n'
                     'Corresponding source and build instructions accompany this release.\n',encoding='utf-8')
-                args=[apk,'mkpkg','--info','name:'+package,'--info','version:1.13.21-r400',
+                args=[apk,'mkpkg','--info','name:'+package,'--info','version:1.13.21-r500',
                     '--info','arch:'+arch,'--info','license:GPL-3.0-or-later',
                     '--info','maintainer:Obhod contributors','--info','description:Sing-box with Obhod compatibility patches',
                     '--info','url:https://github.com/Ktoto59/obhod-source',
                     '--info','depends:ca-bundle kmod-inet-diag kmod-tun libc']
-                if profile=='lite':args+=['--info','provides:sing-box=1.13.21-r400 sing-box-tiny-any']
+                if profile=='lite':args+=['--info','provides:sing-box=1.13.21-r500 sing-box-tiny-any']
                 for name,body in scripts.items():
                     file=work/name;file.write_text(body);args+=['--script',name+':'+str(file)]
-                artifact=output/f'{package}-1.13.21-r400_{arch}.apk'
-                subprocess.run(args+['--files',stage,'--output',artifact],check=True)
+                artifact=output/f'{package}-1.13.21-r500_{arch}.apk'
+                subprocess.run(args+['--files',stage,'--output',artifact],check=True,
+                    env={**os.environ,'SOURCE_DATE_EPOCH':'0'})
                 files={f.relative_to(stage).as_posix():(f.read_bytes(),f.stat().st_mode&0o777) for f in stage.rglob('*') if f.is_file() and not f.relative_to(stage).as_posix().startswith('lib/apk/')}
-                control=f'Package: {package}\nVersion: 1.13.21-400\nArchitecture: {arch}\nMaintainer: Obhod contributors\nLicense: GPL-3.0-or-later\nSection: net\nDepends: libc, ca-bundle, kmod-inet-diag, kmod-tun\n'
+                control=f'Package: {package}\nVersion: 1.13.21-500\nArchitecture: {arch}\nMaintainer: Obhod contributors\nLicense: GPL-3.0-or-later\nSection: net\nDepends: libc, ca-bundle, kmod-inet-diag, kmod-tun\n'
                 if profile=='lite':control+='Provides: sing-box, sing-box-tiny-any\nConflicts: sing-box\n'
                 else:control+='Conflicts: sing-box-tiny\n'
                 control+='Require-User: sing-box=5566:sing-box=5566\nDescription: Sing-box with Obhod compatibility patches\n'
-                conffiles=(stage/f'lib/apk/packages/{package}.conffiles').read_bytes()
+                # APK accepts directory entries here; opkg attempts to copy the
+                # directory as a file during upgrade and aborts. Expand only the
+                # regular config files actually present in this package.
+                config_paths=set()
+                for entry in (stage/f'lib/apk/packages/{package}.conffiles').read_text().splitlines():
+                    path=stage/entry.lstrip('/')
+                    if path.is_dir():
+                        config_paths.update('/'+f.relative_to(stage).as_posix() for f in path.rglob('*') if f.is_file())
+                    elif path.is_file():config_paths.add('/'+path.relative_to(stage).as_posix())
+                    else:raise ValueError('Missing packaged configuration: '+entry)
+                conffiles=('\n'.join(sorted(config_paths))+'\n').encode()
                 controls={'control':(control.encode(),0o644),'postinst':(scripts['post-install'].encode(),0o755),'prerm':(scripts['pre-deinstall'].encode(),0o755),'conffiles':(conffiles,0o644)}
-                ipk=output/f'{package}_1.13.21-400_{arch}.ipk'
+                ipk=output/f'{package}_1.13.21-500_{arch}.ipk'
                 ipk.write_bytes(builder.tar_bytes({'debian-binary':(b'2.0\n',0o644),'control.tar.gz':(builder.tar_bytes(controls),0o644),'data.tar.gz':(builder.tar_bytes(files),0o644)}))
                 # Preserve original service files and packaging scripts for offline rebuilds.
-                support=output/'stock-support'/arch/package
-                shutil.copytree(stage,support,dirs_exist_ok=True)
-                (support/'usr/bin/sing-box').unlink()
-                (support.parent/(package+'-metadata.txt')).write_text(metadata)
+                support_output=output/'stock-support'/arch/package
+                shutil.copytree(stage,support_output,dirs_exist_ok=True)
+                (support_output/'usr/bin/sing-box').unlink()
+                (support_output.parent/(package+'-metadata.txt')).write_text(metadata)
+                modes={'.':stage.stat().st_mode&0o777}
+                modes.update({p.relative_to(stage).as_posix():p.stat().st_mode&0o777
+                    for p in stage.rglob('*') if p.relative_to(stage).as_posix()!='usr/bin/sing-box'})
+                (support_output.parent/(package+'-modes.json')).write_text(json.dumps(modes,sort_keys=True,indent=2)+'\n')
                 for manager,file in [('apk',artifact),('opkg',ipk)]:
                     records.append({'arch':arch,'manager':manager,'profile':profile,'name':file.name,
-                        'version':'1.13.21-r400' if manager=='apk' else '1.13.21-400',
+                        'version':'1.13.21-r500' if manager=='apk' else '1.13.21-500',
                         'sha256':hashlib.sha256(file.read_bytes()).hexdigest(),'bytes':file.stat().st_size,
                         'installedBytes':sum(len(content) for content,_ in files.values()),
                         'releases':['25.12'] if manager=='apk' else ['24.10']})

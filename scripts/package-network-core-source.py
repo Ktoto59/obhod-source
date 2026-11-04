@@ -19,12 +19,15 @@ def package(prepared,cache,packages,output):
         shutil.copyfile(prepared/'build-manifest.json',stage/'build-manifest.json')
         shutil.copytree(ROOT/'core',stage/'core')
         (stage/'scripts').mkdir()
-        for name in ['build-network-core-packages.py','build-openwrt-packages.py']:
+        for name in ['build-network-core-packages.py','build-network-core-rollback.py','build-openwrt-packages.py','verify-network-core-packages.py']:
             shutil.copyfile(ROOT/'scripts'/name,stage/'scripts'/name)
+        shutil.copyfile(ROOT/'openwrt/obhod/files/usr/libexec/obhod/core-opkg.uc',stage/'scripts/core-opkg.uc')
         (stage/'LICENSES').mkdir()
         shutil.copyfile(ROOT/'LICENSES/GPL-3.0-only.txt',stage/'LICENSES/GPL-3.0-only.txt')
         shutil.copytree(packages/'stock-support',stage/'packaging/stock-support')
         shutil.copyfile(packages/'packages.json',stage/'packaging/packages.json')
+        for name in ['rollback-base.json','rollback-packages.json']:
+            shutil.copyfile(packages/name,stage/'packaging'/name)
         (stage/'BUILD.sh').write_text('''#!/bin/sh
 set -eu
 cd "$(dirname "$0")"
@@ -33,13 +36,13 @@ export GOMODCACHE="$PWD/modules"
 exec sh core/build.sh "$PWD" "$PWD/binaries" "${1:-mipsle}" "${2:-lite}" "${3:-linux}"
 ''',encoding='utf-8')
         (stage/'BUILD.sh').chmod(0o755)
-        (stage/'README.txt').write_text('sing-box 1.13.21-obhod.4. GPL-3.0-or-later.\n'
+        (stage/'README.txt').write_text('sing-box 1.13.21-obhod.5. GPL-3.0-or-later.\n'
             'Exact patched sing-box, sing-tun and sing sources, module sources, licenses and build recipes are included.\n'
             'Install Go 1.26.10. Run sh BUILD.sh mipsle lite (or mipsle full, arm64 lite, arm64 full).\n'
             'The build uses no module network access. See core/README.md for upstream revisions and changes.\n'
             'Go itself is a build prerequisite, not part of this archive.\n',encoding='utf-8')
         output.parent.mkdir(parents=True,exist_ok=True)
-        with tarfile.open(output,'w:gz',compresslevel=6) as archive:archive.add(stage,arcname='sing-box-1.13.21-obhod.4-source')
+        with tarfile.open(output,'w:gz',compresslevel=6) as archive:archive.add(stage,arcname='sing-box-1.13.21-obhod.5-source')
         print('Corresponding source archive:',output.stat().st_size,'bytes')
 
 

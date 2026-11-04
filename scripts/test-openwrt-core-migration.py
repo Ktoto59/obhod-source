@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Required .4 migration after an old app updater: real OpenWrt ash/UCI/ucode."""
+"""Required .5 migration after an old app updater: real OpenWrt ash/UCI/ucode."""
 import hashlib
 import json
 from pathlib import Path
@@ -28,13 +28,13 @@ def main():
             return p
         stub('usr/bin/sing-box', '''case "$1" in
 version) echo "sing-box version $(cat /tmp/version)";;
-obhod-capabilities) echo dns-pool-v1; echo redirect-table-31bit; [ "$(cat /tmp/version)" != 1.13.21-obhod.4 ] || echo kernel-route-set-v1;;
+obhod-capabilities) echo dns-pool-v1; echo redirect-table-31bit; [ "$(cat /tmp/version)" != 1.13.21-obhod.5 ] || echo kernel-route-set-v1;;
 check) exit 0;;
 esac''')
         stub('bin/ubus', "echo '{}'")
         stub('bin/df', "printf 'Filesystem 1024-blocks Used Available Capacity Mounted\\nroot 1048576 0 %s 0%% /tmp\\n' \"$(cat /tmp/free)\"")
         stub('usr/bin/apk', '''echo "$*" >> /tmp/apk-calls
-case "$*" in *--simulate*) exit 0;; *add*) echo 1.13.21-obhod.4 > /tmp/version;; esac''')
+case "$*" in *--simulate*) exit 0;; *add*) echo 1.13.21-obhod.5 > /tmp/version;; esac''')
         stub('bin/uclient-fetch', 'while [ "$#" -gt 0 ]; do if [ "$1" = -O ]; then cp /tmp/core.apk "$2"; exit $?; fi; shift; done; exit 1')
         stub('usr/libexec/obhod/dns', 'echo "$1" >> /tmp/dns-calls')
         (lab/'proc/meminfo').write_text('MemTotal: 239024 kB\nMemAvailable: 98304 kB\n')
@@ -52,9 +52,9 @@ case "$*" in *--simulate*) exit 0;; *add*) echo 1.13.21-obhod.4 > /tmp/version;;
         state.write_bytes((ROOT/'.tmp/openwrt-legacy-settings.json').read_bytes())
         original = state.read_bytes()
         package = b'fixture APK content\n'*150
-        catalog = {'schema': 1, 'version': '1.13.21-obhod.4', 'packages': [
+        catalog = {'schema': 1, 'version': '1.13.21-obhod.5', 'packages': [
             {'arch': 'aarch64_cortex-a53', 'manager': 'apk', 'profile': profile,
-             'version': '1.13.21-r400', 'releases': ['25.12'], 'bytes': len(package),
+             'version': '1.13.21-r500', 'releases': ['25.12'], 'bytes': len(package),
              'installedBytes': 32000000, 'sha256': hashlib.sha256(package).hexdigest(),
              'url': 'https://api.github.com/repos/Ktoto59/obhod-releases/releases/assets/1'}
             for profile in ['lite', 'full']]}
@@ -67,7 +67,7 @@ case "$*" in *--simulate*) exit 0;; *add*) echo 1.13.21-obhod.4 > /tmp/version;;
             (lab/'tmp/core.apk').write_bytes(package); calls.unlink(missing_ok=True)
             # prepare runs after an old updater preserves the previous core.
             run('/usr/libexec/obhod/control', 'prepare')
-            assert (lab/'tmp/version').read_text().strip() == '1.13.21-obhod.4'
+            assert (lab/'tmp/version').read_text().strip() == '1.13.21-obhod.5'
             assert state.read_bytes() == original
             assert '/tmp/obhod-required-core.' in calls.read_text()
             assert ('!sing-box-tiny' in calls.read_text()) == (flavor == 'sing-box')
@@ -91,7 +91,7 @@ case "$*" in *--simulate*) exit 0;; *add*) echo 1.13.21-obhod.4 > /tmp/version;;
         (lab/'tmp/free').write_text('1048576'); (lab/'etc/apk/arch').write_text('x86_64')
         run('/usr/libexec/obhod/core-upgrade-required', ok=False)
         assert calls.read_bytes() == prior and state.read_bytes() == original
-    print('PASS: old updater -> required .4, preserved full/tiny/profile, no repeat install, tamper/space/platform refusal and cleanup')
+    print('PASS: old updater -> required .5, preserved full/tiny/profile, no repeat install, tamper/space/platform refusal and cleanup')
 
 
 if __name__ == '__main__': main()

@@ -17,7 +17,7 @@ import tarfile
 import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
-VERSION = '0.1.18'
+VERSION = '0.1.19'
 DEPS = ['firewall4', 'kmod-tun', 'kmod-nft-tproxy', 'kmod-nft-queue',
         'uclient-fetch', 'ca-bundle', 'jshn', 'jsonfilter', 'rpcd', 'rpcd-mod-file', 'ucode', 'ucode-mod-fs']
 POST = '''#!/bin/sh
@@ -131,12 +131,13 @@ def main():
                          (ROOT / 'openwrt/obhod/files/usr/libexec/obhod/package-lib.sh', 'package-lib.sh'),
                          (ROOT / 'openwrt/obhod/files/usr/libexec/obhod/core-compat.sh', 'core-compat.sh'),
                          (ROOT / 'openwrt/obhod/files/usr/libexec/obhod/core-select.uc', 'core-select.uc'),
+                         (ROOT / 'openwrt/obhod/files/usr/libexec/obhod/core-opkg.uc', 'core-opkg.uc'),
                          (ROOT / 'openwrt/obhod/files/usr/share/obhod/core-catalog.json', 'core-catalog.json'),
                          (ROOT / 'openwrt/presets.tsv', 'presets.tsv'), (ROOT / 'openwrt/README.md', 'README.md'),
                          (ROOT / 'LICENSE', 'LICENSE'), (ROOT / 'NOTICE', 'NOTICE')]:
         shutil.copyfile(source, destination / name)
     names = [f'obhod_{VERSION}-1_all.ipk', f'luci-app-obhod_{VERSION}-1_all.ipk',
-             f'obhod-{VERSION}-r1.apk', f'luci-app-obhod-{VERSION}-r1.apk', 'install.sh', 'installer-plan.uc', 'package-lib.sh', 'core-compat.sh', 'core-select.uc', 'core-catalog.json', 'presets.tsv', 'README.md', 'LICENSE', 'NOTICE']
+             f'obhod-{VERSION}-r1.apk', f'luci-app-obhod-{VERSION}-r1.apk', 'install.sh', 'installer-plan.uc', 'package-lib.sh', 'core-compat.sh', 'core-select.uc', 'core-opkg.uc', 'core-catalog.json', 'presets.tsv', 'README.md', 'LICENSE', 'NOTICE']
     (destination / 'SHA256SUMS').write_text(''.join(hashlib.sha256((destination / name).read_bytes()).hexdigest() + '  ' + name + '\n' for name in names))
     archive_files = {name: ((destination / name).read_bytes(), 0o755 if name == 'install.sh' else 0o644) for name in names + ['SHA256SUMS']}
     (destination / f'obhod-openwrt-{VERSION}.tar.gz').write_bytes(tar_bytes(archive_files))
@@ -145,6 +146,10 @@ def main():
     url = f'https://github.com/Ktoto59/obhod-releases/releases/download/openwrt-v{VERSION}/{bundle.name}'
     online = (destination / 'install.sh').read_text().replace("BUNDLE_URL=''", f"BUNDLE_URL='{url}'").replace("BUNDLE_SHA256=''", f"BUNDLE_SHA256='{bundle_hash}'")
     (destination / 'install-online.sh').write_text(online)
+    # The bundle carries its own checksum list. The adjacent release manifest
+    # additionally verifies the bundle and the online bootstrap itself.
+    (destination / 'SHA256SUMS').write_text(''.join(hashlib.sha256((destination / name).read_bytes()).hexdigest() + '  ' + name + '\n'
+        for name in names + [bundle.name, 'install-online.sh']))
     print(json.dumps({'version': VERSION, 'formats': ['ipk', 'apk-v3'], 'architecture': 'all/noarch', 'output': str(destination)}))
 
 

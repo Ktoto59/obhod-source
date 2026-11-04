@@ -12,22 +12,27 @@ select_compat_core() {
 	if command -v sing-box >/dev/null 2>&1; then
 		compat_current=$(sing-box version 2>/dev/null | head -n 1 | sed -n 's/^sing-box version //p')
 		if [ "${compat_requested:-auto}" = auto ]; then
-		case "$compat_current" in 1.12.*|1.13.[0-9]|1.13.1[0-9]|1.13.20|1.13.21|1.13.21-obhod.1|1.13.21-obhod.2|1.13.21-obhod.3|1.13.21-obhod.4|'') ;; *) return 0;; esac
+		case "$compat_current" in 1.12.*|1.13.[0-9]|1.13.1[0-9]|1.13.20|1.13.21|1.13.21-obhod.1|1.13.21-obhod.2|1.13.21-obhod.3|1.13.21-obhod.4|1.13.21-obhod.5|'') ;; *) return 0;; esac
 		fi
 	fi
 	compat_profile=full; [ "$core" != sing-box-tiny ] || compat_profile=lite
 	ucode "$compat_selector" "$compat_catalog" "$compat_arch" "$manager" "$compat_profile" "$compat_release" "${compat_requested:-auto}" > "$work/core-selection" || die 'Не удалось проверить каталог совместимых ядер.'
 	[ -s "$work/core-selection" ] || return 0
 	read -r compat_url compat_sha compat_bytes compat_installed compat_version < "$work/core-selection"
-	# A local .4 must not be downgraded by the still-public .3 catalog.
-	if [ "${compat_requested:-auto}" = auto ] && [ "${compat_current:-}" = 1.13.21-obhod.4 ]; then
-		case "$compat_version" in *400) ;; *) return 0;; esac
+	# A stale catalog must never automatically downgrade an installed Obhod core.
+	if [ "${compat_requested:-auto}" = auto ]; then
+		case "${compat_current:-}" in 1.13.21-obhod.[2345])
+			compat_revision=${compat_version##*-}; compat_revision=${compat_revision#r}
+			[ "$compat_revision" -ge "$(( ${compat_current##*.} * 100 ))" ] || return 0;;
+		esac
 	fi
 	compat=1
 	compat_plan_installed=$compat_installed
 	compat_plan_download=$compat_bytes
-	compat_target=1.13.21-obhod.3; case "$compat_version" in *200) compat_target=1.13.21-obhod.2;; *400) compat_target=1.13.21-obhod.4;; esac
-	if [ "${compat_current:-}" = "$compat_target" ] && [ "$(find_core)" = "$core" ] && /usr/bin/sing-box obhod-capabilities 2>/dev/null | grep -qx dns-pool-v1; then
+	compat_target=1.13.21-obhod.3; case "$compat_version" in *200) compat_target=1.13.21-obhod.2;; *400|*401) compat_target=1.13.21-obhod.4;; *500) compat_target=1.13.21-obhod.5;; esac
+	if [ "${compat_current:-}" = "$compat_target" ] && [ "$(find_core)" = "$core" ] &&
+		{ [ "$manager" != opkg ] || [ "$(opkg status "$core" | awk '$1=="Version:" {print $2;exit}')" = "$compat_version" ]; } &&
+		/usr/bin/sing-box obhod-capabilities 2>/dev/null | grep -qx dns-pool-v1; then
 		compat_skip=1; compat_plan_installed=0; compat_plan_download=0
 	fi
 	printf 'Совместимое ядро Обхода: %s · %s · %s\n' "$compat_arch" "$compat_profile" "$compat_version"
@@ -45,6 +50,8 @@ download_compat_core() {
 }
 
 install_compat_core() {
+	compat_opkg_helper="${compat_selector%/*}/core-opkg.uc"
+	[ "$manager" != opkg ] || ucode "$compat_opkg_helper" recover || die 'Не удалось восстановить конфигурацию после операции opkg. Резервная копия сохранена.'
 	[ "$compat_skip" = 0 ] || return 0
 	for compat_other in sing-box podkop passwall passwall2 homeproxy; do
 		if ubus call service list "{\"name\":\"$compat_other\"}" 2>/dev/null | jsonfilter -e '@.*.instances.*.running' | grep -q true; then die 'Остановите другую службу прокси перед сменой ядра.'; fi
@@ -52,7 +59,7 @@ install_compat_core() {
 	download_compat_core
 	compat_backup="/root/obhod-before-core-$(date +%Y%m%d-%H%M%S)-$$.tar.gz"
 	set -- /etc/config/dhcp
-	for compat_path in /etc/obhod /etc/config/obhod /etc/config/sing-box; do [ ! -e "$compat_path" ] || set -- "$@" "$compat_path"; done
+	for compat_path in /etc/obhod /etc/config/obhod /etc/config/sing-box /etc/sing-box; do [ ! -e "$compat_path" ] || set -- "$@" "$compat_path"; done
 	tar -czf "$compat_backup" "$@" 2>/dev/null || die 'Не удалось сохранить настройки перед сменой ядра.'
 	chmod 600 "$compat_backup"
 	# Replacing the binary must not enable OpenWrt's separate sing-box service.
@@ -67,9 +74,11 @@ install_compat_core() {
 		if [ -n "$compat_old" ]; then
 			mkdir "$work/rollback"
 			compat_old_version=$(opkg status "$compat_old" | awk '$1=="Version:" {print $2;exit}')
-			case "$compat_old_version" in 1.13.21-200|1.13.21-300|1.13.21-400)
+			case "$compat_old_version" in 1.13.21-200|1.13.21-300|1.13.21-400|1.13.21-401|1.13.21-500)
 				compat_old_core=1.13.21-obhod.3; [ "$compat_old_version" != 1.13.21-200 ] || compat_old_core=1.13.21-obhod.2
 				[ "$compat_old_version" != 1.13.21-400 ] || compat_old_core=1.13.21-obhod.4
+				[ "$compat_old_version" != 1.13.21-401 ] || compat_old_core=1.13.21-obhod.4
+				[ "$compat_old_version" != 1.13.21-500 ] || compat_old_core=1.13.21-obhod.5
 				compat_old_profile=full; [ "$compat_old" != sing-box-tiny ] || compat_old_profile=lite
 				ucode "$compat_selector" "$compat_catalog" "$compat_arch" opkg "$compat_old_profile" "$compat_release" "$compat_old_core" > "$work/rollback/selection" || die 'Не удалось проверить пакет отката.'
 				[ -s "$work/rollback/selection" ] || die 'Точная версия ядра для отката недоступна. Установка отменена.'
@@ -97,9 +106,9 @@ install_compat_core() {
 			[ "$(grep -c '^Removing package ' "$work/remove-plan")" = 1 ] || die 'Смена ядра затронет другие пакеты.'
 			opkg remove "$compat_old" || die 'Не удалось удалить прежнее ядро.'
 		fi
-		if ! opkg --force-downgrade install "$compat_file"; then
+		if ! ucode "$compat_opkg_helper" "$compat_file"; then
 			if [ -n "${compat_rollback:-}" ] && [ "$compat_old" != "$core" ] && opkg status "$core" | grep -q '^Status:.* installed$'; then opkg remove "$core" || die 'Не удалось удалить незавершённую установку ядра для отката.'; fi
-			if [ -n "${compat_rollback:-}" ]; then opkg --force-downgrade install "$compat_rollback" || die 'Не удалось восстановить прежнее ядро. Проверьте пакеты через SSH.'; fi
+			if [ -n "${compat_rollback:-}" ]; then ucode "$compat_opkg_helper" "$compat_rollback" || die 'Не удалось восстановить прежнее ядро. Проверьте пакеты через SSH.'; fi
 			die 'Установка совместимого ядра не удалась; выполнен откат, если прежнее ядро было установлено.'
 		fi
 	fi
