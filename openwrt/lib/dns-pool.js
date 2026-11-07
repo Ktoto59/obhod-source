@@ -27,6 +27,9 @@ function parseUpstream(value) {
     throw new Error('DNS поддерживает UDP, TCP, TLS и HTTPS без логина, пароля и фрагмента URL.');
   }
   const server = url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  if (!/^[a-z]+:\/\//i.test(value) && !net.isIP(server)) {
+    throw new Error('Для имени DNS-сервера укажите протокол, например tls://dns.example.com. Без протокола используйте IP.');
+  }
   const port = Number(url.port || (protocol === 'https' ? 443 : protocol === 'tls' ? 853 : 53));
   if (!server || (!net.isIP(server) && !/^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z0-9-]+\.?$/i.test(server)) || !Number.isInteger(port) || port < 1 || port > 65535) {
     throw new Error('Укажите корректное имя или IP и порт DNS-сервера.');
@@ -35,7 +38,7 @@ function parseUpstream(value) {
     throw new Error('Путь и параметры URL доступны только для DNS over HTTPS.');
   }
   if (localAddress(server) &&
-      ([53, 1053, ...Object.values(POOLS)].includes(port) || (port >= LEAF_PORT && port < LEAF_PORT + 12))) {
+      ([53, 1053, 1156, ...Object.values(POOLS)].includes(port) || (port >= LEAF_PORT && port < LEAF_PORT + 14))) {
     throw new Error('Этот локальный адрес создаёт петлю DNS. Укажите вышестоящий DNS-сервер.');
   }
   return { protocol, server, port, path: protocol === 'https' ? (url.pathname === '/' ? '/dns-query' : url.pathname) + url.search : '' };
@@ -43,7 +46,7 @@ function parseUpstream(value) {
 
 function normalizeDnsPool(options, routing) {
   const mode = options.dnsPoolMode || 'single';
-  if (!['single', 'parallel', 'balanced'].includes(mode)) throw new Error('Выберите режим опроса DNS.');
+  if (!['single', 'fallback', 'parallel', 'balanced'].includes(mode)) throw new Error('Выберите режим опроса DNS.');
   if (mode === 'single' || !routing.dnsResolverEnabled) return null;
   const list = entries(options.dnsUpstreams).map(parseUpstream);
   const upstreams = [...new Map(list.map(v => [JSON.stringify(v), v])).values()];

@@ -48,8 +48,17 @@ prepare() {
 	if /usr/bin/sing-box obhod-capabilities 2>/dev/null | grep -qx dns-pool-v1; then
 		ucode /usr/libexec/obhod/native-dns.uc || { error 'Не удалось подготовить встроенную группу DNS.'; return 1; }
 	fi
+	ucode /usr/libexec/obhod/dns-filter-config.uc || { error 'Не удалось подготовить DNS-фильтр.'; return 1; }
+	# Older APK updaters install the two application packages offline. Keep the
+	# optional socket module out of their hard dependencies and prepare it here,
+	# after the package transaction, only when the configured DNS needs it.
+	if [ -s "$RUN/dns-pool-filter.json" ] && ! ucode -e 'import * as socket from "socket";' >/dev/null 2>&1; then
+		/usr/libexec/obhod/dns-pool-install > "$RUN/dns-component-log" 2>&1 || {
+			error 'Не удалось подготовить компонент DNS. Проверьте доступ к репозиторию OpenWrt и журнал dns-component-log.'; return 1;
+		}
+	fi
 	ucode /usr/libexec/obhod/dns-pool-config.uc || { error 'Не удалось подготовить группу DNS. Проверьте список серверов в LuCI.'; return 1; }
-	for pool in direct proxy bootstrap; do
+	for pool in direct proxy bootstrap filter; do
 		file="$RUN/dns-pool-$pool.json"
 		[ -s "$file" ] || continue
 		ucode /usr/libexec/obhod/dns-pool.uc "$file" --check >/dev/null 2>&1 || {
@@ -99,16 +108,18 @@ stop_failed() {
 }
 
 stop_and_wait() {
-	# Do not turn off the listener while dnsmasq still depends on it. A failed
-	# transaction must leave the running service available for a safe retry.
+	preserve_dns=${1:-0}
+	# Explicit stop restores DNS before turning off its listener. A replacement
+	# keeps that dependency through a bounded watchdog grace instead.
 	# A starting apply may publish its first backup while restore waits on FD 8.
 	# Use the configured policy for failed-stop recovery, not an unlocked stat.
 	manage_dns=0
 	[ "$(jsonfilter -i "$STATE" -e '@.options.manageDns' 2>/dev/null)" != true ] || manage_dns=1
-	/usr/libexec/obhod/dns restore || { error 'Не удалось восстановить DNS; служба оставлена работающей. Повторите остановку после проверки DNS.'; return 1; }
+	if [ "$preserve_dns" = 1 ]; then dns_action=hold; else dns_action=restore; fi
+	/usr/libexec/obhod/dns "$dns_action" || { error 'Не удалось восстановить DNS; служба оставлена работающей. Повторите остановку после проверки DNS.'; return 1; }
 	pid=$(cat "$RUN/run-pid" 2>/dev/null)
 	[ -n "$pid" ] || pid=$(ubus call service list '{"name":"obhod"}' 2>/dev/null | jsonfilter -e '@.obhod.instances.main.pid')
-	/etc/init.d/obhod stop >/dev/null 2>&1 || { stop_failed; return 1; }
+	OBHOD_CONTROL=1 OBHOD_DNS_HANDOFF="$preserve_dns" /etc/init.d/obhod stop >/dev/null 2>&1 || { stop_failed; return 1; }
 	case "$pid" in ''|*[!0-9]*) pid= ;; esac
 	count=0
 	while [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; do
@@ -117,7 +128,7 @@ stop_and_wait() {
 	done
 	# SIGKILL can leave a DNS child alive after the run PID exits. Drain its
 	# transaction under FD 8 before reporting stop success or clearing enabled.
-	/usr/libexec/obhod/dns restore || { error 'Служба остановлена, но не удалось окончательно восстановить DNS. Проверьте DNS и повторите остановку.'; return 1; }
+	/usr/libexec/obhod/dns "$dns_action" || { error 'Служба остановлена, но не удалось окончательно восстановить DNS. Проверьте DNS и повторите остановку.'; return 1; }
 }
 
 recover() {
@@ -152,15 +163,51 @@ recover() {
 	fi
 }
 
+dns_watch() {
+	# 45 seconds covers procd's five-second respawn delay and listener startup.
+	# A healthy worker renews this grace; failed respawn loops cannot renew it.
+	missing=0
+	while :; do
+		sleep 1
+		/usr/libexec/obhod/dns watch-tick "$1"
+		case "$?" in 0) missing=0;; 3) missing=$((missing + 1));; 4) return 0;; *) return 1;; esac
+		if [ "$missing" -ge 45 ]; then
+			/usr/libexec/obhod/dns watch-expire "$1"
+			case "$?" in 0) missing=0;; 4) return 0;; *) sleep 5;; esac
+		fi
+	done
+}
+
+service() {
+	case "$1" in start|stop|restart|reload|boot|shutdown) ;; *) return 2;; esac
+	token=$(operation acquire apply '' "$$") || return 1
+	trap 'operation release apply "$token" "$$"' EXIT
+	exec 9>/var/lock/obhod-apply.lock/lease || return 1
+	operation hold apply "$token" "$$" || return 1
+	case "$1" in
+		stop) "$0" stop ;;
+		shutdown) stop_and_wait ;;
+		boot)
+			if [ "$(uci -q get obhod.main.enabled)" = 1 ]; then "$0" start
+			else /usr/libexec/obhod/dns restore; fi
+			;;
+		*) "$0" start ;;
+	esac
+}
+
 case "$1" in
+	service) service "$2" ;;
+	dns-watch) dns_watch "$2" ;;
 	prepare) prepare ;;
 	ready) ready ;;
 	recover) recover "$2" ;;
 	start)
-		stop_and_wait || exit 1
+		start_enabled=$(uci -q get obhod.main.enabled)
+		stop_and_wait 1 || exit 1
 		set_enabled 1 || exit 1
-		/etc/init.d/obhod start >/dev/null 2>&1 && ready && exit 0
-		stop_and_wait && set_enabled 0
+		OBHOD_CONTROL=1 /etc/init.d/obhod start >/dev/null 2>&1 && ready && exit 0
+		# Preserve the same bounded grace for an RPC rollback to the old profile.
+		if stop_and_wait 1 && [ "$start_enabled" != 1 ]; then set_enabled 0; fi
 		exit 1
 		;;
 	stop)

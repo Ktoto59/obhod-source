@@ -3,13 +3,23 @@ START=95
 STOP=10
 USE_PROCD=1
 
+# rc.common sources this file before procd.sh takes FD 1000. Enter the apply
+# lease first, in the same order as LuCI, then let control call the native init
+# methods internally. In particular, an external stop needs control's final
+# post-kill DNS drain; stop_service alone cannot drain a starting worker.
+case "${action:-}" in
+	start|stop|restart|reload|boot|shutdown)
+		[ "${OBHOD_CONTROL:-}" = 1 ] || exec /usr/libexec/obhod/control service "$action"
+		;;
+esac
+
 start_service() {
 	if [ "$(uci -q get obhod.main.enabled)" != 1 ]; then
 		/usr/libexec/obhod/dns restore
 		return 0
 	fi
-	/usr/libexec/obhod/control prepare || return 1
-	for pool in direct proxy bootstrap; do
+	/usr/libexec/obhod/control prepare || { /usr/libexec/obhod/dns restore-if-unready; return 1; }
+	for pool in direct proxy bootstrap filter; do
 		file="/var/run/obhod/dns-pool-$pool.json"
 		[ -s "$file" ] || continue
 		procd_open_instance "dns-pool-$pool"
@@ -31,7 +41,17 @@ start_service() {
 }
 
 stop_service() {
-	/usr/libexec/obhod/dns restore
+	# rc.common passes stop arguments to procd as instance names; use an
+	# environment flag only for the synchronous control replacement path.
+	if [ "$OBHOD_DNS_HANDOFF" = 1 ]; then
+		/usr/libexec/obhod/dns restore-unless-held
+	else
+		/usr/libexec/obhod/dns restore
+	fi
+}
+
+restart() {
+	/usr/libexec/obhod/control start
 }
 
 reload_service() {

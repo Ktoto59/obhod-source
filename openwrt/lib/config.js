@@ -76,6 +76,30 @@ function configureKernelRouting(config) {
   tun.strict_route = false;
 }
 
+function configureFilteredFakeIp(config, profile) {
+  if (!profile.routing.dnsResolverEnabled) return;
+  const ports = [1156, 12065, 12066];
+  if (config.inbounds.some(inbound => ports.includes(inbound.listen_port))) {
+    throw new Error('Локальный порт прокси занят проверкой DNS. Выберите другой порт прокси.');
+  }
+  // Keep the native FakeIP store and the original name sent to the proxy.
+  // The bounded helper checks the real resolver first, then asks this store
+  // for a FakeIP only when the requested address was actually permitted.
+  config.dns.servers.push({ type: 'udp', tag: 'filtered-fake-dns', server: '127.0.0.1', server_port: 1156 });
+  for (const rule of config.dns.rules) {
+    if (rule.server !== 'fake-dns' || !(rule.domain_suffix || rule.rule_set)) continue;
+    rule.server = 'filtered-fake-dns';
+    rule.disable_cache = true;
+  }
+  const leaves = [
+    { tag: 'dns-filter-real-in', port: 12065, server: 'proxy-dns' },
+    { tag: 'dns-filter-fake-in', port: 12066, server: 'fake-dns' }
+  ];
+  config.inbounds.push(...leaves.map(leaf => ({ type: 'direct', tag: leaf.tag, listen: '127.0.0.1', listen_port: leaf.port })));
+  config.dns.rules.unshift(...leaves.map(leaf => ({ inbound: [leaf.tag], action: 'route', server: leaf.server })));
+  config.route.rules.unshift({ inbound: leaves.map(leaf => leaf.tag), action: 'hijack-dns' });
+}
+
 function generateRouterConfig(input, options = {}) {
   if (input.tunnels?.some((tunnel) => tunnel.type === 'awg')) {
     throw new Error('AmneziaWG требует отдельного совместимого ядра и пока недоступен в пакете OpenWrt.');
@@ -112,6 +136,7 @@ function generateRouterConfig(input, options = {}) {
   for (const rule of config.route.rules) if (rule.action === 'sniff') rule.timeout = '1s';
   configureFakeIp(config, profile, options);
   configureDnsPool(config, profile, options);
+  configureFilteredFakeIp(config, profile);
   configureKernelRouting(config);
   if (options.disableQuic === true) config.route.rules.splice(1, 0, { network: 'udp', port: 443, action: 'reject' });
   if (options.downloadListsViaProxy === true) {

@@ -10,6 +10,89 @@ mkdir -p /var/run/obhod /var/lock
 # A killed worker cannot leave a stale mkdir lock behind.
 exec 8>/var/lock/obhod-dns.guard || exit 1
 ucode -e 'import { fdopen } from "fs"; let lease = fdopen(8, "a"); if (!lease || !lease.lock("x")) exit(1);' || exit 1
+# A live watchdog retains the listener dependency across short replacements and
+# procd respawns. Its grace is bounded even when the replacing caller is killed.
+RUN=/var/run/obhod
+HOLD="$RUN/dns-watch"
+watch_error='Служба не восстановилась; DNS оставлен за Обходом. Повторите запуск или выключите службу для восстановления прежнего DNS.'
+watch_alive() {
+	[ -f "$HOLD" ] && read -r watch_token watch_pid < "$HOLD" || return 1
+	case "$watch_token" in dns-watch.*) ;; *) return 1;; esac
+	ucode /usr/libexec/obhod/operation.uc alive "$watch_pid" >/dev/null 2>&1 || return 1
+	# A recycled PID must not turn a stale marker into an unbounded grace.
+	[ ! -r "/proc/$watch_pid/cmdline" ] || tr '\000' '\n' < "/proc/$watch_pid/cmdline" | grep -qx "$watch_token"
+}
+worker_ready() {
+	[ -f "$RUN/ready" ] && ucode /usr/libexec/obhod/operation.uc alive "$(cat "$RUN/run-pid" 2>/dev/null)" >/dev/null 2>&1
+}
+ensure_watch() {
+	watch_alive && return 0
+	watch_file=$(mktemp "$RUN/dns-watch.XXXXXX") || return 1
+	watch_token=${watch_file##*/}
+	# Never inherit DNS, apply/job or rc.common's procd locks into this daemon.
+	(exec 8>&- 9>&- 1000>&-; exec /usr/libexec/obhod/control dns-watch "$watch_token") </dev/null >/dev/null 2>&1 &
+	watch_pid=$!
+	printf '%s %s\n' "$watch_token" "$watch_pid" > "$watch_file" && mv "$watch_file" "$HOLD" && return 0
+	kill "$watch_pid" 2>/dev/null
+	rm -f "$watch_file"
+	return 1
+}
+publish_ready=0
+expire_watch=0
+case "$1" in
+	hold) ensure_watch; exit $? ;;
+	watch-tick|watch-expire)
+		[ -f "$HOLD" ] && read -r watch_token watch_pid < "$HOLD" && [ "$watch_token" = "$2" ] || exit 4
+		worker_ready && exit 0
+		[ "$1" = watch-expire ] || exit 3
+		# Enabled intent must never silently become public DNS after a crash.
+		# Failed initial starts clear enabled in control; explicit stop restores
+		# immediately. A failed recovery stays closed and remains retryable.
+		if [ "$(uci -q get obhod.main.enabled)" = 1 ]; then
+			[ -f "$RUN/error" ] || printf '%s\n' "$watch_error" > "$RUN/error"
+			exit 5
+		fi
+		# Retry a failed restore without losing the durable recovery intent.
+		expire_watch=1
+		set -- restore
+		;;
+	restore-unless-held)
+		watch_alive && exit 0
+		if [ -f "$BACKUP" ] && [ "$(uci -q get obhod.main.enabled)" = 1 ]; then ensure_watch; exit $?; fi
+		set -- restore
+		;;
+	restore-if-unready)
+		worker_ready && exit 0
+		watch_alive && exit 0
+		if [ -f "$BACKUP" ] && [ "$(uci -q get obhod.main.enabled)" = 1 ]; then ensure_watch; exit $?; fi
+		set -- restore
+		;;
+	ready)
+		pid=$2
+		[ "$(cat "$RUN/run-pid" 2>/dev/null)" = "$pid" ] &&
+			ucode /usr/libexec/obhod/operation.uc alive "$pid" || exit 1
+		publish_ready=1
+		if [ "$(jsonfilter -i /etc/obhod/settings.json -e '@.options.manageDns')" = true ]; then
+			ensure_watch || exit 1
+			set -- apply "$pid"
+		else
+			set -- restore
+		fi
+		;;
+esac
+# Explicit stop cancels a grace period before draining any in-flight apply.
+[ "$1" != restore ] || [ "$expire_watch" = 1 ] || rm -f "$HOLD" || exit 1
+# Publish readiness inside FD 8, so watchdog expiry cannot undo a successful
+# apply between its commit and the worker announcing that it is ready.
+finish() {
+	result=$?
+	[ "$result" != 0 ] || [ "$expire_watch" != 1 ] || rm -f "$HOLD" || result=1
+	[ "$result" != 0 ] || [ "$publish_ready" != 1 ] || touch "$RUN/ready" || result=1
+	if [ "$result" = 0 ] && [ "$publish_ready" = 1 ] && [ "$(cat "$RUN/error" 2>/dev/null)" = "$watch_error" ]; then rm -f "$RUN/error"; fi
+	[ -z "${WORK:-}" ] || { rm -f "$staged" "$WORK/original" "$WORK/obhod_dns_work" "$WORK/.uci/obhod_dns_work"; rmdir "$WORK/.uci" "$WORK" 2>/dev/null; }
+	exit "$result"
+}
+trap finish EXIT
 # An in-flight apply may own the lock before publishing its backup.
 [ "$1" != restore ] || [ -f "$BACKUP" ] || exit 0
 # A service apply queued behind restore must not outlive its run worker. The
@@ -24,7 +107,6 @@ if [ "$1" = apply ] && [ -n "${2:-}" ]; then
 fi
 WORK=$(mktemp -d /var/run/obhod/dns.XXXXXX) || exit 1
 staged=
-trap 'rm -f "$staged" "$WORK/original" "$WORK/obhod_dns_work" "$WORK/.uci/obhod_dns_work"; rmdir "$WORK/.uci" "$WORK" 2>/dev/null' EXIT
 mkdir "$WORK/.uci"
 # A distinct package name prevents libuci from reading /tmp/.uci/dhcp deltas.
 # Commit this fresh snapshot, never another LuCI session's pending changes.

@@ -17,7 +17,7 @@
 | Правила | Домены, подсети, программы, готовые наборы | Домены, подсети, готовые наборы |
 | Подключения | WireGuard, AmneziaWG и прокси-протоколы | WireGuard и прокси-протоколы; состав зависит от ядра |
 | Начать | **[Установка и руководство Windows](windows/README.md)** | **[Установка и руководство OpenWrt](openwrt/README.md)** |
-| Скачать | [Установщик Windows](https://github.com/Ktoto59/obhod-releases/releases/latest) | [Комплект OpenWrt](https://github.com/Ktoto59/obhod-releases/releases/tag/openwrt-v0.1.19) |
+| Скачать | [Установщик Windows](https://github.com/Ktoto59/obhod-releases/releases/latest) | [Комплект OpenWrt](https://github.com/Ktoto59/obhod-releases/releases/tag/openwrt-v0.1.20) |
 
 Обход использует **ваши** серверы: получите файл `.conf`, ссылку подключения
 или V2Ray-подписку у своего провайдера либо администратора. Готовые аккаунты,

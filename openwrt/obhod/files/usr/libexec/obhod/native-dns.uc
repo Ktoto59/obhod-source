@@ -6,7 +6,8 @@ let file = '/var/run/obhod/config.json';
 let settings = json(readfile('/etc/obhod/settings.json'));
 let config = json(readfile(file));
 let mode = settings.options?.dnsPoolMode || 'single';
-if (!settings.profile.routing.dnsResolverEnabled || mode == 'single') exit(0);
+// Ordered fallback stays portable even on cores with native racing pools.
+if (!settings.profile.routing.dnsResolverEnabled || mode == 'single' || mode == 'fallback') exit(0);
 if (!match(mode, /^(parallel|balanced)$/)) die('Invalid DNS pool mode');
 let removed = [];
 for (let group in ['direct','proxy','bootstrap']) {

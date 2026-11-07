@@ -19,4 +19,8 @@ push(checks, {
     name: 'FakeIP через DNS роутера', ok: running && access(work + '/fakeip-ok'),
     message: access(work + '/fakeip-ok') ? 'dnsmasq передаёт служебные адреса. Кэш находится в ОЗУ и сохраняется при перезапуске службы.' : 'Нет служебного адреса. Проверьте управление dnsmasq и сохранённую конфигурацию.'
 });
+if (settings.profile?.routing?.dnsResolverEnabled) push(checks, {
+    name: 'Проверка DNS перед FakeIP', ok: running && access(work + '/dns-filter-ok'),
+    message: access(work + '/dns-filter-ok') ? 'Локальные обработчики проверки DNS запущены.' : 'Проверка выбранных доменов недоступна. Проверьте службу и компонент DNS.'
+});
 printf('%J\n', { checkedAt: time(), checks, note: 'На клиентском устройстве шлюз и DNS должны указывать на этот роутер. Проверка на роутере не проверяет настройки ПК или телефона.' });

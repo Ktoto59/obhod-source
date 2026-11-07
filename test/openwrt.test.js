@@ -82,11 +82,11 @@ test('FakeIP uses common domain rules before sniffing and keeps ordinary DNS dir
     const fake = config.dns.servers.find(s => s.type === 'fakeip');
     assert.equal(fake.inet4_range, '198.18.0.0/15');
     assert.equal(!!fake.inet6_range, ipv6);
-    const a = config.dns.rules.find(r => r.domain_suffix && r.server === 'fake-dns');
+    const a = config.dns.rules.find(r => r.domain_suffix && r.server === 'filtered-fake-dns');
     assert.deepEqual(a.domain_suffix, ['example.org']);
     assert.equal(a.rewrite_ttl, 120);
     assert.deepEqual(a.query_type, ipv6 ? ['A', 'AAAA'] : ['A']);
-    assert.ok(config.dns.rules.some(r => r.rule_set?.includes('preset-discord') && r.server === 'fake-dns'));
+    assert.ok(config.dns.rules.some(r => r.rule_set?.includes('preset-discord') && r.server === 'filtered-fake-dns'));
     const empty = config.dns.rules.find(r => r.domain_suffix && r.action === 'predefined');
     assert.deepEqual(empty.query_type, ipv6 ? ['HTTPS', 'SVCB'] : ['HTTPS', 'SVCB', 'AAAA']);
     assert.equal(empty.rcode, 'NOERROR');

@@ -1,15 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
-// Bounded, loopback-only DNS race. Encryption and egress stay in sing-box.
+// Bounded, loopback-only DNS pools. Encryption and egress stay in sing-box.
 import * as socket from 'socket';
 import { readfile } from 'fs';
 
 let config = json(readfile(ARGV[0]) || '{}');
-if (!match(config.mode || '', /^(parallel|balanced)$/) ||
-    type(config.port) != 'int' || index([1153, 1154, 1155], config.port) < 0 || type(config.servers) != 'array' ||
+let filtering = config.mode == 'filtered-fakeip';
+if (!match(config.mode || '', /^(fallback|parallel|balanced|filtered-fakeip)$/) ||
+    type(config.port) != 'int' || index(filtering ? [1156] : [1153, 1154, 1155], config.port) < 0 || type(config.servers) != 'array' ||
     length(config.servers) < 2 || length(config.servers) > 4) die('Invalid DNS pool configuration');
 let firstPort = config.port == 1153 ? 12053 : config.port == 1154 ? 12057 : 12061;
 let bootstrap = config.port == 1155;
-if (!bootstrap && length(filter(config.servers, p => type(p) != 'int' || p < firstPort || p > firstPort + 3))) die('DNS pool cannot cross routing groups');
+if (filtering) {
+    if (length(config.servers) != 2 || type(config.servers[0]) != 'int' || type(config.servers[1]) != 'int' || config.servers[0] != 12065 || config.servers[1] != 12066) die('Invalid filtered FakeIP listeners');
+}
+else if (!bootstrap && length(filter(config.servers, p => type(p) != 'int' || p < firstPort || p > firstPort + 3))) die('DNS pool cannot cross routing groups');
 if (bootstrap) {
     if (type(config.mark) != 'int' || config.mark < 1 || config.mark > 2147483647) die('Invalid DNS bypass mark');
     for (let server in config.servers) {
@@ -76,6 +80,54 @@ function validPacket(data, parsed) {
     }
     return offset == length(data);
 }
+function nameKey(data, offset) {
+    let key = '';
+    for (let hops = 0; hops < 128; hops++) {
+        let size = ord(data, offset++);
+        if (!size) return lc(key);
+        if ((size & 192) == 192) { offset = ((size & 63) << 8) | ord(data, offset); continue; }
+        key += sprintf('%c', size) + substr(data, offset, size); offset += size;
+    }
+    return null;
+}
+function permitsFakeIp(q, packet, parsed) {
+    let requested = word(q.packet, q.parsed.end - 4);
+    // Truncated replies trigger the client's normal TCP retry. DNS errors and
+    // non-address queries retain the provider's original response.
+    if ((ord(packet, 2) & 2) || (ord(packet, 3) & 15) || word(q.packet, q.parsed.end - 2) != 1 || index([1, 28], requested) < 0) return false;
+    let offset = parsed.end, answers = [], aliases = {}, total = word(packet, 6) + word(packet, 8) + word(packet, 10);
+    for (let i = 0; i < total; i++) {
+        let owner = nameKey(packet, offset);
+        offset = nameEnd(packet, offset);
+        let kind = word(packet, offset), cls = word(packet, offset + 2), size = word(packet, offset + 8), start = offset + 10;
+        if (kind == 41 && ord(packet, offset + 4)) return false; // Extended RCODE.
+        if (i < word(packet, 6) && cls == 1) {
+            if (kind == 5) aliases[owner] = nameKey(packet, start);
+            else if (kind == requested) push(answers, { owner, start });
+        }
+        offset = start + size;
+    }
+    let reachable = {}, owner = nameKey(q.packet, 12);
+    for (let hops = 0; hops <= word(packet, 6) && owner != null && !reachable[owner]; hops++) {
+        reachable[owner] = true; owner = aliases[owner];
+    }
+    let found = false;
+    for (let answer in answers) {
+        if (!reachable[answer.owner]) continue;
+        found = true;
+        let at = answer.start, nonzero = 0;
+        if (requested == 1) {
+            if (ord(packet, at) == 127) return false;
+            for (let j = 0; j < 4; j++) nonzero |= ord(packet, at + j);
+            if (!nonzero) return false;
+        }
+        else {
+            for (let j = 0; j < 15; j++) nonzero |= ord(packet, at + j);
+            if (!nonzero && ord(packet, at + 15) <= 1) return false;
+        }
+    }
+    return found;
+}
 function failure(packet, q) {
     return substr(packet, 0, 2) + sprintf('%c%c', 128 | (ord(packet, 2) & 121), 130 | (ord(packet, 3) & 16)) + bytes(1) + bytes(0) + bytes(0) + bytes(0) + substr(packet, 12, q.end - 12);
 }
@@ -122,6 +174,10 @@ function attempt(q, index) {
     if (q.done || q.sent[index]) return;
     let source = sources[index], packet = bytes(q.id) + substr(q.packet, 2);
     q.sent[index] = now();
+    if (config.mode == 'fallback') {
+        q.current = index;
+        q.attemptDeadline = q.sent[index] + TIMEOUT / length(sources);
+    }
     if (!q.client) {
         // Dedicated connected sockets isolate clients even after the 16-bit ID
         // wraps. Closing a race also discards late replies from its losers.
@@ -142,6 +198,7 @@ function next(q) {
     let best = -1, score = 1e30;
     for (let index, source in sources) {
         if (q.sent[index]) continue;
+        if (config.mode == 'fallback') { best = index; break; }
         let value = source.score + source.failures * 1000;
         if (value < score) { best = index; score = value; }
     }
@@ -160,7 +217,9 @@ function submit(packet, address, client) {
     let q = { id: sequence, packet, parsed, address, client, sent: {}, failed: {}, done: false, deadline: now() + TIMEOUT };
     pending[q.id] = q;
     if (client) client.active++;
-    if (config.mode == 'parallel') for (let index, source in sources) attempt(q, index);
+    if (filtering) attempt(q, 0);
+    else if (config.mode == 'fallback') next(q);
+    else if (config.mode == 'parallel') for (let index, source in sources) attempt(q, index);
     else {
         // Occasionally retry other servers so a recovered resolver can rejoin.
         if ((++counter % 16) == 0) attempt(q, int(counter / 16) % length(sources));
@@ -169,9 +228,21 @@ function submit(packet, address, client) {
     }
 }
 function answer(index, packet, expected) {
-    if (length(packet) < 12 || !(ord(packet, 2) & 128)) return;
-    let q = pending[word(packet, 0)], parsed = question(packet);
-    if (!q || (expected && q != expected) || !q.sent[index] || q.failed[index] || !parsed || parsed.key != q.parsed.key || (ord(packet, 2) & 120) != (ord(q.packet, 2) & 120) || !validPacket(packet, parsed)) return;
+    let q = length(packet) >= 12 ? pending[word(packet, 0)] : null;
+    let parsed = length(packet) >= 12 ? question(packet) : null;
+    if (!q || !(ord(packet, 2) & 128) || (expected && q != expected) || !q.sent[index] || q.failed[index] || !parsed || parsed.key != q.parsed.key || (ord(packet, 2) & 120) != (ord(q.packet, 2) & 120) || !validPacket(packet, parsed)) {
+        if ((config.mode == 'fallback' || filtering) && expected && !expected.done) expected.failed[index] = true;
+        return;
+    }
+    if (filtering) {
+        if (index == 1 || !permitsFakeIp(q, packet, parsed)) { finish(q, packet); return; }
+        q.realSucceeded = true; q.failed[0] = true;
+        attempt(q, 1);
+        return;
+    }
+    // A DNS result is authoritative for this exchange, including a filtering
+    // result or SERVFAIL. Only transport/malformed failures try the next server.
+    if (config.mode == 'fallback') { finish(q, packet); return; }
     let code = ord(packet, 3) & 15;
     let negative = code == 3 || (code == 0 && word(packet, 6) == 0);
     if (code != 0 || negative) {
@@ -274,7 +345,12 @@ while (true) {
     for (let id in keys(pending)) {
         let q = pending[id];
         if (!q) continue;
-        if (stamp >= q.deadline || (q.negativeUntil && stamp >= q.negativeUntil) || length(q.failed) == length(sources)) finish(q, q.fallback || failure(q.packet, q.parsed));
+        if (stamp >= q.deadline || (q.negativeUntil && stamp >= q.negativeUntil) || length(q.failed) == length(sources) || (filtering && q.failed[0] && !q.realSucceeded)) finish(q, q.fallback || failure(q.packet, q.parsed));
+        else if (config.mode == 'fallback' && (q.failed[q.current] || stamp >= q.attemptDeadline)) {
+            q.failed[q.current] = true;
+            for (let stream in streams) if (stream.query == q && stream.source == q.current) closeStream(stream);
+            next(q);
+        }
         else if (config.mode == 'balanced' && stamp >= q.next) next(q);
     }
     for (let client in values(clients)) if (stamp >= client.deadline) closeClient(client);

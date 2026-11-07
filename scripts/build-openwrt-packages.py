@@ -17,7 +17,7 @@ import tarfile
 import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
-VERSION = '0.1.19'
+VERSION = '0.1.20'
 DEPS = ['firewall4', 'kmod-tun', 'kmod-nft-tproxy', 'kmod-nft-queue',
         'uclient-fetch', 'ca-bundle', 'jshn', 'jsonfilter', 'rpcd', 'rpcd-mod-file', 'ucode', 'ucode-mod-fs']
 POST = '''#!/bin/sh
@@ -112,7 +112,7 @@ def build(package, destination, apk):
                 '--script', f'post-upgrade:{post_path}', '--output', str(destination / f'{package}-{VERSION}-r1.apk')]
         if package == 'obhod':
             args += ['--script', f'pre-deinstall:{pre_path}']
-        subprocess.run(args, check=True)
+        subprocess.run(args, check=True, env={**os.environ, 'SOURCE_DATE_EPOCH': '0'})
 
 
 def main():

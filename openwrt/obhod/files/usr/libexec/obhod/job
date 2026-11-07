@@ -47,7 +47,7 @@ if [ "$action" = start ] || [ "$action" = stop ] || [ "$action" = restart ]; the
     control_action=$action
     if [ "$action" = restart ]; then
         [ -f "$RUN/ready" ] || { message='Служба выключена. Для запуска используйте кнопку «Включить».'; exit 1; }
-        # control start waits for the old process and restores DNS before launch.
+        # control start waits for the old process while retaining managed DNS.
         control_action=start
         printf 'Перезапускаем службу с сохранёнными настройками…\n' > "$RUN/job-message"
     fi
@@ -63,6 +63,12 @@ jsonfilter -i /etc/obhod/settings.json -e '@.config' > "$work/config" 2>/dev/nul
 if /usr/bin/sing-box check -c "$work/config" >/dev/null 2>&1; then touch "$work/config-ok"; fi
 if [ -f "$RUN/ready" ]; then
     nft list table inet sing-box >/dev/null 2>&1 && touch "$work/firewall-ok" || true
+    if [ -s "$RUN/dns-pool-filter.json" ] &&
+        grep -q '0100007F:0484 .* 0A ' /proc/net/tcp &&
+        grep -q '0100007F:2F21 .* 0A ' /proc/net/tcp &&
+        grep -q '0100007F:2F22 .* 0A ' /proc/net/tcp; then
+        touch "$work/dns-filter-ok"
+    fi
     nslookup -timeout=3 example.org 127.0.0.1 > "$work/dns" 2>/dev/null &
     child=$!
     (sleep 5; kill "$child" 2>/dev/null) & timer=$!

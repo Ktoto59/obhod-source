@@ -265,6 +265,10 @@ app.whenReady().then(async () => {
       page.disableQuic.checked=true;page.downloadLists.checked=true;
       page.testUrl.value='https://test.example/check';page.interval.value='5m';page.listInterval.value='6h';
       await page.save(true);
+      assert(!applied && notifications.at(-1).includes('Подготовить DNS'), 'Single DNS requires the pre-FakeIP filtering component too');
+      assert(!page.dnsPrepareButton.hidden, 'DNS preparation stays visible in single-server mode');
+      page.dnsPrepareButton.click();await handlerWork;
+      await page.save(true);
       assert(applied && running && applied.profile.tunnels.length === 51, 'Save and start');
       assert(uploadChunks>3,'Large Unicode profile is transferred in small chunks');
       assert(applied.profile.routing.failoverTunnelIds.length === 51, 'Group saved');
@@ -369,10 +373,11 @@ app.whenReady().then(async () => {
       page.dnsEnabled.checked=true;page.dnsPoolMode.value='parallel';
       page.dnsUpstreams.value='https://1.1.1.1/dns-query\\nhttps://1.0.0.1/dns-query';
       page.dnsBootstrapServers.value='1.1.1.1\\n8.8.8.8';page.updateDnsFields();page.markDirty();
+      dnsPoolReady=false;page.updateStatus(await rpc.declare({method:'status'})());
       assert(!page.dnsPoolFields.hidden && page.dnsSingleFields.hidden,'DNS group editor replaces single-server fields');
       var beforePoolSaves=saves;
       await page.save(false);
-      assert(saves===beforePoolSaves && notifications.at(-1).includes('Подготовить DNS-группы'),'Missing optional DNS component is explained before save');
+      assert(saves===beforePoolSaves && notifications.at(-1).includes('Подготовить DNS'),'Missing DNS component is explained before save');
       page.dnsPrepareButton.click();await handlerWork;
       assert(serviceRequests.at(-1)==='dns-prepare' && !running,'DNS preparation uses the asynchronous service operation without starting a tunnel');
       await page.save(false);
@@ -380,7 +385,7 @@ app.whenReady().then(async () => {
       assert(applied.options.dnsUpstreams.length===2 && applied.config.dns.servers.find(s=>s.tag==='proxy-dns').server_port===1154,'DNS group has the proxy gateway');
       assert(page.dnsPrepareButton.hidden,'Prepared DNS component no longer offers installation');
       page.updateStatus({...page.lastStatus,dnsPoolNative:true,dnsPoolReady:true});
-      assert(page.dnsPrepareButton.hidden && page.dnsPrepareHint.textContent.includes('внутри сетевого ядра'),'Native DNS needs no optional component');
+      assert(page.dnsPrepareButton.hidden && page.dnsPrepareHint.textContent.includes('готов'),'DNS component readiness is shown independently of native pool support');
       page.dnsUpstreams.value='invalid endpoint';page.markDirty();await page.save(false);
       assert(saves===beforePoolSaves+1,'Invalid DNS group does not overwrite saved settings');
       page.cancelChanges();assert(page.dnsUpstreams.value.includes('1.0.0.1') && !page.dirty,'Cancel restores DNS group editor');

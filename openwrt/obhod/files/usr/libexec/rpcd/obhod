@@ -73,7 +73,9 @@ case "$2" in
 		native_dns=0
 		[ -z "$core_key" ] || { grep -qx dns-pool-v1 "$RUN/core-capabilities" 2>/dev/null && native_dns=1; } || true
 		json_add_boolean dnsPoolNative "$native_dns"
-		json_add_boolean dnsPoolReady "$({ [ "$native_dns" = 1 ] || [ -f /usr/lib/ucode/socket.so ]; } && echo 1 || echo 0)"
+		# Pre-FakeIP filtering and ordered fallback need the portable helper too.
+		json_add_boolean dnsPoolReady "$([ -f /usr/lib/ucode/socket.so ] && echo 1 || echo 0)"
+		json_add_boolean dnsFilterReady "$([ -s "$RUN/dns-pool-filter.json" ] && grep -q '0100007F:0484 .* 0A ' /proc/net/tcp && echo 1 || echo 0)"
 		json_add_string jobState "$(cat "$RUN/job-state" 2>/dev/null)"
 		json_add_string jobAction "$(cat "$RUN/job-action" 2>/dev/null)"
 		json_add_string jobMessage "$(cat "$RUN/job-message" 2>/dev/null)"

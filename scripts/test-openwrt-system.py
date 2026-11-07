@@ -21,7 +21,11 @@ TOOLS = ROOT / '.tmp/openwrt-tools'
 LAB = Path('/tmp/obhod-openwrt-lab')
 APK = TOOLS / 'sbin/apk.static'
 PACKAGES = Path(os.environ.get('OBHOD_TEST_PACKAGES', ROOT / 'release/openwrt'))
-PREVIOUS_VERSION = os.environ.get('OBHOD_TEST_PREVIOUS_APP', '0.1.4')
+VERSION = (ROOT / 'openwrt/obhod/files/usr/share/obhod/version').read_text().strip()
+PREVIOUS_VERSION = os.environ.get('OBHOD_TEST_PREVIOUS_APP', '0.1.19')
+PREVIOUS_PACKAGES = Path(os.environ.get('OBHOD_TEST_PREVIOUS_PACKAGES', PACKAGES))
+SOCKET_APK = Path(os.environ.get('OBHOD_TEST_SOCKET_APK', ROOT / '.tmp/dns-policy-tools/socket.apk'))
+SOCKET_MODULE = Path(os.environ.get('OBHOD_TEST_SOCKET_MODULE', ROOT / '.tmp/dns-policy-tools/usr/lib/ucode/socket.so'))
 
 
 def run(args, **kwargs):
@@ -47,8 +51,8 @@ def prepare():
     checked_download('https://downloads.openwrt.org/releases/25.12.6/targets/x86/64/openwrt-25.12.6-x86-64-rootfs.tar.gz',
                      rootfs, '55e52bb34de582a1ebe56bd50f94ff54ac7c77f5bca9cae807656d1930456da4')
     LAB.mkdir(exist_ok=True)
-    # This fixed directory belongs only to this disposable test, never to a router.
-    assert LAB.resolve().parent == Path('/tmp') and LAB.name == 'obhod-openwrt-lab'
+    # Only disposable test directories can be reset, never a router or host root.
+    assert LAB.resolve().parent == Path('/tmp') and LAB.name.startswith('obhod-openwrt-lab-')
     shutil.rmtree(LAB)
     LAB.mkdir()
     run(['tar', '-xzf', rootfs, '-C', LAB], check=True)
@@ -62,7 +66,7 @@ def prepare():
         stage = Path(temporary) / 'root'
         stage.mkdir()
         deps = ['sing-box', 'firewall4', 'kmod-tun', 'kmod-nft-tproxy', 'kmod-nft-queue',
-                'uclient-fetch', 'ca-bundle', 'jshn', 'jsonfilter', 'rpcd', 'rpcd-mod-file', 'luci-base', 'ucode', 'ucode-mod-fs']
+                'uclient-fetch', 'ca-bundle', 'jshn', 'jsonfilter', 'rpcd', 'rpcd-mod-file', 'luci-base', 'libc', 'ucode', 'ucode-mod-fs']
         artifact = LAB / 'tmp/testdeps.apk'
         result = run([APK, 'mkpkg', '--info', 'name:obhod-testdeps', '--info', 'version:1-r1',
                       '--info', 'arch:noarch', '--info', 'provides:' + ' '.join(deps), '--files', stage, '--output', artifact])
@@ -74,14 +78,21 @@ def prepare():
     database = LAB / 'lib/apk/db'
     if database.exists():
         shutil.rmtree(database)
-    inside('/usr/bin/apk', '--initdb', '--no-network', '--no-scripts', 'add', '--allow-untrusted', '/tmp/testdeps.apk',
-           '/tmp/obhod-0.1.19-r1.apk', '/tmp/luci-app-obhod-0.1.19-r1.apk')
+    inside('/usr/bin/apk', '--initdb', '--no-network', '--no-scripts', 'add', '--allow-untrusted', '/tmp/testdeps.apk')
+    # Existing offline updaters cannot fetch a new optional runtime component.
+    inside('/usr/bin/apk', '--no-network', '--no-scripts', 'add', '--allow-untrusted',
+           f'/tmp/obhod-{VERSION}-r1.apk', f'/tmp/luci-app-obhod-{VERSION}-r1.apk')
+    assert not (LAB / 'usr/lib/ucode/socket.so').exists()
+    assert SOCKET_APK.is_file(), 'Set OBHOD_TEST_SOCKET_APK to the cached official ucode-mod-socket APK'
+    shutil.copyfile(SOCKET_APK, LAB / 'tmp/socket.apk')
+    inside('/usr/bin/apk', '--no-network', '--no-scripts', 'add', '--allow-untrusted', '/tmp/socket.apk')
+    inside('/usr/bin/ucode', '-e', 'import * as socket from "socket"; if (type(socket.connect) != "function") exit(1);')
     assert (LAB / 'www/luci-static/resources/view/obhod/overview.js').exists()
     assert (LAB / 'www/luci-static/resources/obhod/overview.css').exists()
     assert (LAB / 'etc/obhod').stat().st_mode & 0o777 == 0o700
     assert not (LAB / 'etc/obhod/settings.json').exists()
     assert inside('/sbin/uci', '-q', 'get', 'obhod.main.enabled') == '0'
-    print('PASS: real OpenWrt APK installation, payload, permissions and disabled defaults')
+    print('PASS: real OpenWrt APK installation without optional socket, native socket import, payload, permissions and disabled defaults')
 
 
 def kernel_route_tests():
@@ -217,6 +228,58 @@ def schema_tests():
     assert json.loads((LAB / 'var/run/obhod/config.json').read_text()) == expected
     settings.unlink()
     print('PASS: legacy profiles migrate to the shared FakeIP configuration without rewriting secrets or rules')
+
+
+def socket_component_tests():
+    """First start after an offline upgrade prepares only the needed component."""
+    paths = ['usr/bin/sing-box', 'bin/ubus', 'usr/libexec/obhod/dns-pool-install',
+             'etc/obhod/settings.json', 'var/run/obhod/controller-secret']
+    saved = {name: ((LAB/name).read_bytes(), (LAB/name).stat().st_mode & 0o777)
+             if (LAB/name).exists() else None for name in paths}
+    module = LAB/'usr/lib/ucode/socket.so'
+    backup = module.with_name('socket.so.fixture')
+    module.rename(backup)
+    calls = LAB/'tmp/socket-install-calls'
+    reject = LAB/'tmp/socket-install-reject'
+    try:
+        for name, body in [
+            ('usr/bin/sing-box', '[ "$1" != version ] || echo "sing-box version 1.12.22"\nexit 0'),
+            ('bin/ubus', "echo '{}'"),
+            ('usr/libexec/obhod/dns-pool-install',
+             'echo install >> /tmp/socket-install-calls\n[ ! -f /tmp/socket-install-reject ] || exit 1\n'
+             'cp /usr/lib/ucode/socket.so.fixture /usr/lib/ucode/socket.so')]:
+            target = LAB/name
+            target.unlink(missing_ok=True)
+            target.write_text('#!/bin/sh\n'+body+'\n'); target.chmod(0o755)
+        (LAB/'var/run/obhod/controller-secret').write_text('11111111-2222-4333-8444-555555555555')
+        settings = {'profile': {'routing': {'dnsResolverEnabled': False}}, 'options': {},
+                    'config': json.loads((ROOT/'.tmp/openwrt-fakeip-config.json').read_text())}
+        state = LAB/'etc/obhod/settings.json'
+        state.write_text(json.dumps(settings))
+        inside('/usr/libexec/obhod/control', 'prepare')
+        assert not calls.exists() and not module.exists()
+        settings['profile']['routing']['dnsResolverEnabled'] = True
+        state.write_text(json.dumps(settings)); previous = state.read_bytes()
+        reject.touch()
+        result = run(['chroot', LAB, '/usr/libexec/obhod/control', 'prepare'])
+        assert result.returncode != 0 and not module.exists()
+        assert 'компонент DNS' in (LAB/'var/run/obhod/error').read_text()
+        assert not (LAB/'var/run/obhod/ready').exists() and state.read_bytes() == previous
+        reject.unlink()
+        inside('/usr/libexec/obhod/control', 'prepare')
+        assert module.exists() and calls.read_text().splitlines() == ['install', 'install']
+        inside('/usr/libexec/obhod/control', 'prepare')
+        assert calls.read_text().splitlines() == ['install', 'install'] and state.read_bytes() == previous
+    finally:
+        module.unlink(missing_ok=True); backup.rename(module)
+        for name, data in saved.items():
+            target = LAB/name; target.unlink(missing_ok=True)
+            if data is not None:
+                target.write_bytes(data[0]); target.chmod(data[1])
+        calls.unlink(missing_ok=True); reject.unlink(missing_ok=True)
+        for name in ['direct', 'proxy', 'bootstrap', 'filter']:
+            (LAB/f'var/run/obhod/dns-pool-{name}.json').unlink(missing_ok=True)
+    print('PASS: lazy DNS component preparation, disabled-DNS skip, failed-install closed startup, retry and idempotent reuse')
 
 
 def rpc_tests():
@@ -502,9 +565,9 @@ else echo '{}'; fi
 def installer_tests():
     directory = LAB / 'tmp/installer'
     directory.mkdir()
-    for name in ['install.sh', 'installer-plan.uc', 'package-lib.sh', 'core-compat.sh', 'core-select.uc', 'core-opkg.uc', 'core-catalog.json', 'presets.tsv', 'SHA256SUMS', 'LICENSE', 'NOTICE', 'README.md', 'RELEASE-NOTES.md', 'obhod-0.1.19-r1.apk',
-                 'luci-app-obhod-0.1.19-r1.apk', 'obhod_0.1.19-1_all.ipk', 'luci-app-obhod_0.1.19-1_all.ipk',
-                 'obhod-openwrt-0.1.19.tar.gz','install-online.sh']:
+    for name in ['install.sh', 'installer-plan.uc', 'package-lib.sh', 'core-compat.sh', 'core-select.uc', 'core-opkg.uc', 'core-catalog.json', 'presets.tsv', 'SHA256SUMS', 'LICENSE', 'NOTICE', 'README.md', 'RELEASE-NOTES.md', f'obhod-{VERSION}-r1.apk',
+                 f'luci-app-obhod-{VERSION}-r1.apk', f'obhod_{VERSION}-1_all.ipk', f'luci-app-obhod_{VERSION}-1_all.ipk',
+                 f'obhod-openwrt-{VERSION}.tar.gz','install-online.sh']:
         shutil.copyfile(PACKAGES / name, directory / name)
     # Resource fixtures are confined to this disposable chroot.
     (LAB / 'proc').mkdir(exist_ok=True)
@@ -535,6 +598,8 @@ def installer_tests():
     (LAB / 'tmp/free-flash').write_text('61000'); (LAB / 'tmp/free-tmp').write_text('59000')
     output = inside('/bin/sh', '/tmp/installer/install.sh', '--yes')
     assert 'sing-box-tiny' in output and 'apk add sing-box-tiny ' in calls_file.read_text()
+    assert any(line.startswith('apk add ') and ' ucode-mod-socket ' in line
+               for line in calls_file.read_text().splitlines())
     assert ' curl ' not in calls_file.read_text()
     assert json.loads((LAB / 'etc/obhod/defaults.json').read_text())['presetIds'] == ['discord','telegram','google_ai']
     (LAB / 'etc/obhod/defaults.json').unlink()
@@ -612,7 +677,7 @@ def installer_tests():
     assert state.read_text() == '{"existing":"profile"}'
     assert inside('/bin/sh', '-c', 'test -f /var/run/obhod/ready') == ''
     calls = (LAB / 'tmp/installer-calls').read_text()
-    assert 'apk update' in calls and 'apk --no-network add --allow-untrusted ./obhod-0.1.19-r1.apk' in calls
+    assert 'apk update' in calls and f'apk --no-network add --allow-untrusted ./obhod-{VERSION}-r1.apk' in calls
     (LAB / 'etc/apk/world').unlink()
     (LAB / 'etc/openwrt_release').write_text("DISTRIB_ID='OpenWrt'\nDISTRIB_RELEASE='24.10.4'\n")
     opkg = LAB / 'bin/opkg'
@@ -622,8 +687,10 @@ def installer_tests():
     (LAB/'var/opkg-lists/fixture').write_text('Package: sing-box\nInstalled-Size: 33554432\nSize: 8388608\n\n')
     inside('/bin/sh', '/tmp/installer/install.sh', '--yes')
     calls = (LAB / 'tmp/installer-calls').read_text()
-    assert 'opkg update' in calls and 'opkg install ./obhod_0.1.19-1_all.ipk ./luci-app-obhod_0.1.19-1_all.ipk' in calls
-    shutil.copyfile(PACKAGES / 'obhod-openwrt-0.1.19.tar.gz', LAB / 'tmp/online-bundle.tar.gz')
+    assert 'opkg update' in calls and f'opkg install ./obhod_{VERSION}-1_all.ipk ./luci-app-obhod_{VERSION}-1_all.ipk' in calls
+    assert any(line.startswith('opkg install ') and ' ucode-mod-socket ' in line
+               for line in calls.splitlines())
+    shutil.copyfile(PACKAGES / f'obhod-openwrt-{VERSION}.tar.gz', LAB / 'tmp/online-bundle.tar.gz')
     script = (PACKAGES / 'install-online.sh').read_text().replace("BUNDLE_API_URL=''", "BUNDLE_API_URL='https://api.github.com/repos/example/releases/assets/1'")
     (LAB / 'tmp/online-installer.sh').write_text(script)
     downloader = '#!/bin/sh\nwhile [ "$#" -gt 0 ]; do case "$1" in --output|-O) cp /tmp/online-bundle.tar.gz "$2"; exit $?;; esac; shift; done\nexit 1\n'
@@ -640,7 +707,7 @@ def installer_tests():
     result = run(['chroot', LAB, '/bin/sh', '/tmp/online-installer.sh', '--yes'])
     assert result.returncode != 0 and calls_file.read_text() == before_download
     calls = calls_file.read_text()
-    with (directory / 'obhod_0.1.19-1_all.ipk').open('ab') as target:
+    with (directory / f'obhod_{VERSION}-1_all.ipk').open('ab') as target:
         target.write(b'tampered')
     result = run(['chroot', LAB, '/bin/sh', '/tmp/installer/install.sh'])
     assert result.returncode != 0
@@ -772,15 +839,18 @@ def apk_switch_tests():
 
 
 def update_tests():
-    # Bootstrap the new updater onto the previously released app, as on a router.
+    # Execute the updater shipped in the previous release, as on a router.
     shutil.copyfile(APK, LAB/'usr/bin/apk'); (LAB/'usr/bin/apk').chmod(0o755)
-    (LAB/'etc/apk/world').write_text('obhod-testdeps\n')
+    # Earlier installer-planning fixtures intentionally emptied world. Restore
+    # its application pins before removing the optional component, so APK does
+    # not garbage-collect the real installed application and virtual base deps.
+    (LAB/'etc/apk/world').write_text('obhod-testdeps\nobhod\nluci-app-obhod\n')
+    inside('/usr/bin/apk', '--no-network', '--no-scripts', 'del', 'ucode-mod-socket')
+    assert not (LAB / 'usr/lib/ucode/socket.so').exists()
     for name in [f'obhod-{PREVIOUS_VERSION}-r1.apk',f'luci-app-obhod-{PREVIOUS_VERSION}-r1.apk']:
-        shutil.copyfile(PACKAGES/name, LAB/'tmp'/name)
+        shutil.copyfile(PREVIOUS_PACKAGES/name, LAB/'tmp'/name)
     inside('/usr/bin/apk','--no-network','--no-scripts','add','--allow-untrusted',f'/tmp/obhod-{PREVIOUS_VERSION}-r1.apk',f'/tmp/luci-app-obhod-{PREVIOUS_VERSION}-r1.apk')
     base = LAB/'usr/libexec/obhod'
-    for name in ['update','update-metadata.uc','package-lib.sh','operation.uc']:
-        shutil.copyfile(ROOT/'openwrt/obhod/files/usr/libexec/obhod'/name, base/name); (base/name).chmod(0o755)
     (LAB/'usr/share/obhod/version').parent.mkdir(parents=True,exist_ok=True)
     (LAB/'usr/share/obhod/version').write_text(PREVIOUS_VERSION+'\n')
     (base/'control').write_text('#!/bin/sh\nprintf "%s\\n" "$1" >> /tmp/update-controls\nexit 0\n'); (base/'control').chmod(0o755)
@@ -810,8 +880,8 @@ esac
     previous = state.read_bytes()
     (LAB/'var/run/obhod/ready').unlink(missing_ok=True)
     (LAB/'tmp/free-flash').write_text('61000'); (LAB/'tmp/free-tmp').write_text('59000')
-    archive = (PACKAGES/'obhod-openwrt-0.1.19.tar.gz').read_bytes()
-    metadata = {'version':'0.1.19','tag':'openwrt-v0.1.19','bundleUrl':'https://api.github.com/repos/Ktoto59/obhod-releases/releases/assets/1','bundleSha256':hashlib.sha256(archive).hexdigest()}
+    archive = (PACKAGES/f'obhod-openwrt-{VERSION}.tar.gz').read_bytes()
+    metadata = {'version':VERSION,'tag':f'openwrt-v{VERSION}','bundleUrl':'https://api.github.com/repos/Ktoto59/obhod-releases/releases/assets/1','bundleSha256':hashlib.sha256(archive).hexdigest()}
     (LAB/'tmp/update-bundle').write_bytes(archive)
     def write_metadata(data): (LAB/'tmp/update-metadata').write_text(json.dumps(data))
     def job(action):
@@ -825,7 +895,7 @@ esac
     write_metadata(metadata)
     result,message = job('check'); assert result == 'available', (result,message)
     assert state.read_bytes() == previous and not (LAB/'tmp/update-controls').exists()
-    for mutation in [{'bundleUrl':'https://example.org/evil'}, {'tag':'v0.18.0'}, {'version':'0.1.19;reboot'}, {'bundleSha256':'x'*64}]:
+    for mutation in [{'bundleUrl':'https://example.org/evil'}, {'tag':'v0.18.0'}, {'version':f'{VERSION};reboot'}, {'bundleSha256':'x'*64}]:
         write_metadata({**metadata,**mutation}); result,message = job('install')
         assert result == 'error' and state.read_bytes() == previous
         assert not (LAB/'tmp/update-controls').exists()
@@ -847,7 +917,8 @@ esac
     (LAB/'tmp/update-bundle').write_bytes(archive); write_metadata(metadata)
     result,message=job('install')
     assert result=='done', (result,message,(LAB/'var/run/obhod/update-log').read_text()[-2500:])
-    assert (LAB/'usr/share/obhod/version').read_text().strip()=='0.1.19'
+    assert (LAB/'usr/share/obhod/version').read_text().strip()==VERSION
+    assert not (LAB/'usr/lib/ucode/socket.so').exists(), 'Offline update must not require fetching the optional DNS component'
     assert state.read_bytes()==previous
     # The updater releases its lock before the deferred rpcd reload finishes.
     deadline=time.monotonic()+3
@@ -855,13 +926,13 @@ esac
     assert (LAB/'tmp/update-rpcd').read_text().splitlines()==['reload']
     result,message=job('check'); assert result=='current', (result,message)
     configs={name:(LAB/name).read_bytes() for name in ['etc/config/obhod','etc/config/dhcp']}
-    for version in [PREVIOUS_VERSION,'0.1.19']:
+    for version in [PREVIOUS_VERSION,VERSION]:
         inside('/usr/bin/apk','--no-network','--no-scripts','add','--allow-untrusted',
             f'/tmp/obhod-{version}-r1.apk',f'/tmp/luci-app-obhod-{version}-r1.apk')
         assert (LAB/'usr/share/obhod/version').read_text().strip()==version
         assert state.read_bytes()==previous
         assert all((LAB/name).read_bytes()==data for name,data in configs.items())
-    print(f'PASS: real APK application rollback 0.1.19 -> {PREVIOUS_VERSION} -> 0.1.19 preserves profile and UCI/DNS')
+    print(f'PASS: real APK application rollback {VERSION} -> {PREVIOUS_VERSION} -> {VERSION} preserves profile and UCI/DNS')
     print(f'PASS: native APK self-update from {PREVIOUS_VERSION}, profile preservation, deferred rpcd reload, version check and unsafe metadata/archive rejection')
 
 
@@ -875,6 +946,8 @@ def ipk_tests():
         run(['chroot', lab, '/bin/mkdir', '-p', '/var/lock'], check=True)
         for source in PACKAGES.glob('*.ipk'):
             shutil.copyfile(source, lab / 'tmp' / source.name)
+        for name in [f'obhod_{PREVIOUS_VERSION}-1_all.ipk', f'luci-app-obhod_{PREVIOUS_VERSION}-1_all.ipk']:
+            shutil.copyfile(PREVIOUS_PACKAGES/name, lab/'tmp'/name)
         spec = importlib.util.spec_from_file_location('builder', ROOT / 'scripts/build-openwrt-packages.py')
         builder = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(builder)
@@ -885,7 +958,20 @@ def ipk_tests():
         result = run(['chroot', lab, '/bin/opkg', '--offline-root', '/', 'install', '/tmp/testdeps.ipk'])
         assert result.returncode == 0, result.stdout + result.stderr
         result = run(['chroot', lab, '/bin/opkg', '--offline-root', '/', 'install',
-                      '/tmp/obhod_0.1.19-1_all.ipk', '/tmp/luci-app-obhod_0.1.19-1_all.ipk'])
+                      f'/tmp/obhod_{VERSION}-1_all.ipk', f'/tmp/luci-app-obhod_{VERSION}-1_all.ipk'])
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert not (lab / 'usr/lib/ucode/socket.so').exists()
+        assert SOCKET_MODULE.is_file(), 'Set OBHOD_TEST_SOCKET_MODULE to the cached native socket.so'
+        socket_control = b'Package: ucode-mod-socket\nVersion: 1\nArchitecture: all\nDepends: libc, ucode\nDescription: Isolated native socket module fixture\n'
+        (lab / 'tmp/socket.ipk').write_bytes(builder.tar_bytes({
+            'debian-binary': (b'2.0\n', 0o644),
+            'control.tar.gz': (builder.tar_bytes({'control': (socket_control, 0o644)}), 0o644),
+            'data.tar.gz': (builder.tar_bytes({'usr/lib/ucode/socket.so': (SOCKET_MODULE.read_bytes(), 0o755)}), 0o644)}))
+        result = run(['chroot', lab, '/bin/opkg', '--offline-root', '/', 'install',
+                      '/tmp/socket.ipk'])
+        assert result.returncode == 0, result.stdout + result.stderr
+        result = run(['chroot', lab, '/usr/bin/ucode', '-e',
+                      'import * as socket from "socket"; if (type(socket.connect) != "function") exit(1);'])
         assert result.returncode == 0, result.stdout + result.stderr
         assert (lab / 'usr/libexec/rpcd/obhod').exists()
         assert (lab / 'www/luci-static/resources/obhod/core.js').exists()
@@ -954,10 +1040,9 @@ exec /bin/opkg-real --conf /etc/opkg.conf --offline-root / "$@"
         assert (lab/'usr/bin/sing-box').read_text() == 'sing-box-tiny'
         assert (lab/'tmp/core-calls').read_text().count('\nremove ') == before.count('\nremove ')
         # Exercise the same self-updater with the other supported package manager.
+        inside_lab('/bin/opkg','remove','ucode-mod-socket')
+        assert not (lab/'usr/lib/ucode/socket.so').exists()
         inside_lab('/bin/opkg','--force-downgrade','install',f'/tmp/obhod_{PREVIOUS_VERSION}-1_all.ipk',f'/tmp/luci-app-obhod_{PREVIOUS_VERSION}-1_all.ipk')
-        for name in ['update','update-metadata.uc','package-lib.sh','operation.uc']:
-            target=lab/'usr/libexec/obhod'/name
-            shutil.copyfile(ROOT/'openwrt/obhod/files/usr/libexec/obhod'/name,target); target.chmod(0o755)
         (lab/'usr/share/obhod').mkdir(parents=True,exist_ok=True)
         (lab/'usr/share/obhod/version').write_text(PREVIOUS_VERSION+'\n')
         for relative in ['bin/ubus','bin/uclient-fetch','etc/init.d/rpcd','tmp/update-metadata','tmp/update-bundle']:
@@ -971,30 +1056,34 @@ exec /bin/opkg-real --conf /etc/opkg.conf --offline-root / "$@"
         result=(lab/'var/run/obhod/update-state').read_text().strip()
         assert result=='done', (result,(lab/'var/run/obhod/update-log').read_text()[-2500:])
         assert profile.read_text()=='{"saved":"opkg profile"}'
-        assert (lab/'usr/share/obhod/version').read_text().strip()=='0.1.19'
+        assert (lab/'usr/share/obhod/version').read_text().strip()==VERSION
+        assert not (lab/'usr/lib/ucode/socket.so').exists(), 'Offline update must not require fetching the optional DNS component'
         configs={name:(lab/name).read_bytes() for name in ['etc/config/obhod','etc/config/dhcp']}
-        for version in [PREVIOUS_VERSION,'0.1.19']:
+        for version in [PREVIOUS_VERSION,VERSION]:
             inside_lab('/bin/opkg','--force-downgrade','install',f'/tmp/obhod_{version}-1_all.ipk',f'/tmp/luci-app-obhod_{version}-1_all.ipk')
             assert (lab/'usr/share/obhod/version').read_text().strip()==version
             assert profile.read_text()=='{"saved":"opkg profile"}'
             assert all((lab/name).read_bytes()==data for name,data in configs.items())
-    print('PASS: real OpenWrt 24.10 opkg installation of both IPK packages')
+    print('PASS: real OpenWrt 24.10 installation of both IPK packages without optional socket and native socket import')
     print('PASS: native opkg tiny/full switching, verified predownload, failed-install rollback and tamper rejection')
     print(f'PASS: native opkg self-update from {PREVIOUS_VERSION} preserves the saved profile')
-    print(f'PASS: real opkg application rollback 0.1.19 -> {PREVIOUS_VERSION} -> 0.1.19 preserves profile and UCI/DNS')
+    print(f'PASS: real opkg application rollback {VERSION} -> {PREVIOUS_VERSION} -> {VERSION} preserves profile and UCI/DNS')
 
 
 if __name__ == '__main__':
-    prepare()
-    kernel_route_tests()
-    dns_tests()
-    schema_tests()
-    rpc_tests()
-    observability_tests()
-    lifecycle_tests()
-    recovery_tests()
-    installer_tests()
-    core_job_tests()
-    apk_switch_tests()
-    update_tests()
-    ipk_tests()
+    with tempfile.TemporaryDirectory(prefix='obhod-openwrt-lab-', dir='/tmp') as temporary:
+        LAB = Path(temporary)
+        prepare()
+        kernel_route_tests()
+        dns_tests()
+        schema_tests()
+        socket_component_tests()
+        rpc_tests()
+        observability_tests()
+        lifecycle_tests()
+        recovery_tests()
+        installer_tests()
+        core_job_tests()
+        apk_switch_tests()
+        update_tests()
+        ipk_tests()

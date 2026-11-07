@@ -173,7 +173,8 @@ return view.extend({
     });
     this.dnsPathField = field('Путь DNS over HTTPS', this.dnsPath, 'Обычно /dns-query.');
     this.dnsPoolMode = E('select',{change:function(){self.updateDnsFields();}},[
-      E('option',{value:'single'},'Один сервер'), E('option',{value:'parallel'},'Параллельный опрос · первый ответ'),
+      E('option',{value:'single'},'Один сервер'), E('option',{value:'fallback'},'Основной и резервные · рекомендуется'),
+      E('option',{value:'parallel'},'Параллельный опрос · первый ответ'),
       E('option',{value:'balanced'},'Автоматический выбор · меньше запросов')]);
     this.dnsPoolMode.value = this.options.dnsPoolMode || 'single';
     var dnsValue = routing.dnsServer || 'one.one.one.one';
@@ -186,7 +187,7 @@ return view.extend({
     this.dnsPrepareButton = E('button',{type:'button','class':'cbi-button ob-button',click:ui.createHandlerFn(this,function(){
       if(self.lastStatus.coreBusy || self.lastStatus.updateBusy || self.lastStatus.jobBusy)return Promise.resolve();
       return self.operation(function(){return service('dns-prepare');});
-    })},'Подготовить DNS-группы');
+    })},'Подготовить DNS');
     this.dnsPrepareHint = E('p',{'class':'ob-help'});
     this.verboseLogs = checkbox(routing.enableDiagnostics);
     this.diagnosticRows = E('div',{'class':'ob-diagnostic-rows'});
@@ -333,10 +334,11 @@ return view.extend({
     var networkGrid=E('div',{'class':'ob-columns ob-network-grid'});
     networkGrid.appendChild(card('Локальная сеть', 'Трафик каких интерфейсов нужно обрабатывать. WAN обычно добавлять не нужно.', [field('Добавить интерфейс',this.interfaceSelect),field('Выбранные устройства / ручной ввод', this.interfaces, 'Обычно br-lan. Несколько имён укажите через запятую.')]));
     this.dnsSingleFields = E('div',{'class':'ob-grid'},[field('Провайдер',this.dnsPreset),field('Протокол',this.dnsProtocol),field('DNS-сервер',this.dnsServer),field('Bootstrap IPv4',this.dnsBootstrap),this.dnsPathField]);
-    this.dnsPoolFields = E('div',{},[field('DNS-серверы группы',this.dnsUpstreams,'От двух до четырёх серверов, по одному в строке: IP, udp://, tcp://, tls:// или https:// с путём DoH.'),
-      E('p',{'class':'ob-note'},'В параллельном режиме запрос получают все серверы, возвращается первый ответ. Выбирайте серверы с одинаковой фильтрацией.'),
-      field('Bootstrap DNS',this.dnsBootstrapServers,'До четырёх IP-адресов, по одному в строке. Разрешают имена DNS-серверов, серверов туннелей и узлов загрузки списков. При нескольких адресах используется тот же режим опроса.'),this.dnsPrepareButton,this.dnsPrepareHint]);
-    this.dnsSettings = E('div',{'class':'ob-dns-settings'},[field('Режим опроса DNS',this.dnsPoolMode),this.dnsSingleFields,this.dnsPoolFields]);
+    this.dnsPoolFields = E('div',{},[field('DNS-серверы группы',this.dnsUpstreams,'От двух до четырёх серверов, по одному в строке: IP, udp://, tcp://, tls:// или https:// с путём DoH. В режиме основного и резервных первый сервер — основной.'),
+      E('p',{'class':'ob-note'},'Основной и резервные: каждый запрос начинается с первого сервера; следующий используется только при сетевой ошибке, тайм-ауте или повреждённом ответе. Любой корректный DNS-ответ, включая NXDOMAIN, пустой ответ, REFUSED, SERVFAIL и адрес блокировки, возвращается без опроса резервных. Резервные тоже должны поддерживать нужную фильтрацию на случай отказа основного.'),
+      E('p',{'class':'ob-note'},'Параллельный и автоматический режимы могут предпочесть ответ другого сервера, включая обход блокировки NXDOMAIN или пустым ответом. Используйте в этих режимах только серверы с одинаковой политикой фильтрации.'),
+      field('Bootstrap DNS',this.dnsBootstrapServers,'До четырёх IP-адресов, по одному в строке. Разрешают имена DNS-серверов, серверов туннелей и узлов загрузки списков. При нескольких адресах используется тот же режим опроса.')]);
+    this.dnsSettings = E('div',{'class':'ob-dns-settings'},[field('Режим опроса DNS',this.dnsPoolMode),this.dnsSingleFields,this.dnsPoolFields,this.dnsPrepareButton,this.dnsPrepareHint]);
     this.dnsTtlField = field('TTL выбранных доменов, секунд',this.dnsTtl,'Обычно 60. После перезагрузки роутера старые служебные адреса в кэше устройств должны истечь.');
     networkGrid.appendChild(card(this.dnsHeading, 'Роутер отвечает на DNS-запросы устройств локальной сети.', [E('details',{'class':'ob-details ob-dns-explanation'},[E('summary',{},'Как работает DNS и FakeIP'),this.dnsHint]),switchField(this.dnsSwitchCaption,this.dnsEnabled,this.dnsSwitchHelp),
       this.dnsSettings,this.dnsTtlField,
@@ -442,7 +444,7 @@ return view.extend({
     var state = this.lastStatus, busy = !!(state.updateBusy || state.coreBusy || state.jobBusy);
     this.dnsPrepareButton.hidden = state.dnsPoolReady === true;
     this.dnsPrepareButton.disabled = busy;
-    this.dnsPrepareHint.textContent = state.dnsPoolNative ? 'DNS-группы работают внутри сетевого ядра.' : state.dnsPoolReady ? 'DNS-группы готовы к работе.' : 'Для групп один раз установите небольшой дополнительный компонент из репозитория OpenWrt.';
+    this.dnsPrepareHint.textContent = state.dnsPoolReady ? 'Компонент DNS готов.' : 'Для DNS один раз установите небольшой дополнительный компонент из репозитория OpenWrt.';
     this.operationNotice.hidden=!busy;
     this.operationTitle.textContent=state.coreBusy?(state.coreAction==='remove'?'Удаление ядра':'Установка ядра протоколов'):state.updateBusy?'Обновление Обхода':state.jobAction==='restart'?'Перезапуск службы':'Операция службы';
     this.operationMessage.textContent=((state.coreBusy?state.coreMessage:state.updateBusy?state.updateMessage:state.jobMessage) || 'Выполняется операция…')
@@ -518,7 +520,7 @@ return view.extend({
     this.dnsHeading.textContent='DNS и маршрутизация FakeIP';
     this.dnsSwitchCaption.textContent='Настроить общий DNS';
     this.dnsSwitchHelp.textContent=this.dnsPoolMode.value==='single'?'Этот сервер используется для обычных доменов. По умолчанию — UDP 1.1.1.1.':'Для обычных доменов используется группа DNS. DNS выбранных сайтов сохраняет маршрут через туннель.';
-    this.dnsHint.textContent='Выбранным доменам выдаются служебные IP. Обычные сайты получают реальные адреса и идут напрямую. Устройства должны использовать DNS роутера; соответствия хранятся в /tmp.';
+    this.dnsHint.textContent='Выбранные домены сначала проверяются настроенным DNS через туннель. Служебный IP выдаётся только после разрешающего ответа; блокировки DNS сохраняются. Обычные сайты получают реальные адреса и идут напрямую. Устройства должны использовать DNS роутера; соответствия хранятся в /tmp.';
     [this.dnsPreset,this.dnsProtocol,this.dnsServer,this.dnsBootstrap,this.dnsPath,this.dnsPoolMode,this.dnsUpstreams,this.dnsBootstrapServers].forEach(function(input){input.disabled=!enabled;});
     this.dnsSingleFields.hidden = this.dnsPoolMode.value !== 'single';
     this.dnsPoolFields.hidden = this.dnsPoolMode.value === 'single';
@@ -990,7 +992,7 @@ return view.extend({
     return Promise.resolve().then(function() {
       if (self.lastStatus.coreBusy || self.lastStatus.updateBusy || self.lastStatus.jobBusy) throw new Error(self.busyReason());
       if (self.domainBulkText.value!==self.domainBulkBaseline) throw new Error('В массовом редакторе есть черновик. Нажмите «Заменить полный список доменов» или отмените изменения.');
-      if (checked(self.dnsEnabled) && self.dnsPoolMode.value !== 'single' && !self.lastStatus.dnsPoolReady) throw new Error('Сначала нажмите «Подготовить DNS-группы» в разделе «Сеть».');
+      if (checked(self.dnsEnabled) && !self.lastStatus.dnsPoolReady) throw new Error('Сначала нажмите «Подготовить DNS» в разделе «Сеть».');
       self.collectSelection();
       self.profile.routing.failoverEnabled = checked(self.group);
       if (checked(self.group) && self.profile.routing.failoverTunnelIds.length < 2) throw new Error('Выберите минимум два подключения для группы.');

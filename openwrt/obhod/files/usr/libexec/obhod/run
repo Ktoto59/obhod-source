@@ -5,11 +5,12 @@ RUN=/var/run/obhod
 child=
 monitor=
 log_pid=
+rm -f "$RUN/ready"
 printf '%s\n' "$$" > "$RUN/run-pid"
 cleanup() {
 	rm -f "$RUN/ready"
 	[ -z "$monitor" ] || kill "$monitor" 2>/dev/null
-	/usr/libexec/obhod/dns restore
+	/usr/libexec/obhod/dns restore-unless-held
 	[ -z "$child" ] || { kill "$child" 2>/dev/null; wait "$child" 2>/dev/null; }
 	[ -z "$log_pid" ] || wait "$log_pid" 2>/dev/null
 	[ -z "$monitor" ] || wait "$monitor" 2>/dev/null
@@ -19,6 +20,10 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 143' TERM INT
 
+# Establish crash recovery before launching the core, including SIGKILL/OOM.
+if [ "$(jsonfilter -i /etc/obhod/settings.json -e '@.options.manageDns')" = true ]; then
+	/usr/libexec/obhod/dns hold || exit 1
+fi
 rm -f "$RUN/log.pipe" "$RUN/telemetry.json"
 mkfifo -m 600 "$RUN/log.pipe" || exit 1
 ucode /usr/libexec/obhod/log.uc < "$RUN/log.pipe" &
@@ -32,22 +37,19 @@ while [ "$attempt" -lt 10 ]; do
 	# The DNS listener must be accepting connections before dnsmasq is changed.
 	listening=1
 	grep -q '0100007F:041D .* 0A ' /proc/net/tcp || listening=0
-	for pool in direct proxy bootstrap; do
+	for pool in direct proxy bootstrap filter; do
 		[ -s "$RUN/dns-pool-$pool.json" ] || continue
-		case "$pool" in direct) port=0481;; proxy) port=0482;; bootstrap) port=0483;; esac
+		case "$pool" in direct) port=0481;; proxy) port=0482;; bootstrap) port=0483;; filter) port=0484;; esac
 		grep -q "0100007F:$port .* 0A " /proc/net/tcp || listening=0
 	done
 	[ "$listening" = 1 ] && break
 	attempt=$((attempt + 1))
 done
 [ "$attempt" -lt 10 ] || exit 1
-if [ "$(jsonfilter -i /etc/obhod/settings.json -e '@.options.manageDns')" = true ]; then
-	/usr/libexec/obhod/dns apply "$$" || {
-		printf '%s\n' 'Не удалось настроить DNS. Проверьте dnsmasq и сохранённую копию DNS.' > "$RUN/error"
-		exit 1
-	}
-fi
-touch "$RUN/ready"
+/usr/libexec/obhod/dns ready "$$" || {
+	printf '%s\n' 'Не удалось настроить DNS. Проверьте dnsmasq и сохранённую копию DNS.' > "$RUN/error"
+	exit 1
+}
 /usr/libexec/obhod/monitor "$child" &
 monitor=$!
 wait "$child"

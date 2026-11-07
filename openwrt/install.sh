@@ -7,7 +7,7 @@ BUNDLE_API_URL=''
 set -eu
 umask 077
 export LC_ALL=C
-version=0.1.19
+version=0.1.20
 yes=0
 preset_choice=
 profile=auto
@@ -184,8 +184,8 @@ work=$(mktemp -d /tmp/obhod-install.XXXXXX) || die 'Не удалось созд
 compat_catalog="$directory/core-catalog.json"
 compat_selector="$directory/core-select.uc"
 select_compat_core
-dependencies="$core firewall4 kmod-tun kmod-nft-tproxy kmod-nft-queue ca-bundle uclient-fetch jshn jsonfilter rpcd rpcd-mod-file ucode ucode-mod-fs luci-base"
-if [ "$compat" = 1 ]; then dependencies="firewall4 kmod-tun kmod-inet-diag libc kmod-nft-tproxy kmod-nft-queue ca-bundle uclient-fetch jshn jsonfilter rpcd rpcd-mod-file ucode ucode-mod-fs luci-base"; fi
+dependencies="$core firewall4 kmod-tun kmod-nft-tproxy kmod-nft-queue ca-bundle uclient-fetch jshn jsonfilter rpcd rpcd-mod-file ucode ucode-mod-fs ucode-mod-socket luci-base"
+if [ "$compat" = 1 ]; then dependencies="firewall4 kmod-tun kmod-inet-diag libc kmod-nft-tproxy kmod-nft-queue ca-bundle uclient-fetch jshn jsonfilter rpcd rpcd-mod-file ucode ucode-mod-fs ucode-mod-socket luci-base"; fi
 echo 'Обновляем индексы подписанных репозиториев и рассчитываем зависимости…'
 if [ "$manager" = apk ]; then
 	apk update || die 'Не удалось обновить индексы APK.'
