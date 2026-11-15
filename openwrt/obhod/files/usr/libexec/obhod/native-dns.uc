@@ -2,8 +2,8 @@
 // Convert the portable saved DNS graph only in RAM. A stock core keeps using
 // the ucode helper, so rollback never requires rewriting a user's profile.
 import { readfile, writefile } from 'fs';
-let file = '/var/run/obhod/config.json';
-let settings = json(readfile('/etc/obhod/settings.json'));
+let file = (ARGV[1] || '/var/run/obhod') + '/config.json';
+let settings = json(readfile(ARGV[0] || '/etc/obhod/settings.json'));
 let config = json(readfile(file));
 let mode = settings.options?.dnsPoolMode || 'single';
 // Ordered fallback stays portable even on cores with native racing pools.

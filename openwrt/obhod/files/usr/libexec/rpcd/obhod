@@ -211,9 +211,9 @@ case "$2" in
                 [ ! -f /etc/obhod/dns-backup.json ] && [ "$(uci -q get obhod.main.enabled)" != 1 ]; }; }; then
 			reply 1; exit 0
 		fi
-		jsonfilter -i "$candidate" -e '@.config' > "$RUN/check.json" 2>/dev/null
-		/usr/bin/sing-box check -c "$RUN/check.json" >/dev/null 2>&1 || { rm -f "$RUN/check.json"; reply 0 'Ядро отклонило конфигурацию; прежние настройки сохранены.'; exit 0; }
-		rm -f "$RUN/check.json"
+		if ! reason=$(/usr/libexec/obhod/prepare-config validate "$candidate"); then
+			reply 0 "$reason Прежние настройки сохранены."; exit 0
+		fi
 		was_running=0
 		[ ! -f "$RUN/ready" ] || was_running=1
 		old_enabled=$(uci -q get obhod.main.enabled || echo 0)

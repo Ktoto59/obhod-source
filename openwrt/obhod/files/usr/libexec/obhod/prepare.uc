@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 import { readfile, writefile } from 'fs';
-let settings = json(readfile('/etc/obhod/settings.json'));
+let root = ARGV[2] || '/var/run/obhod';
+let settings = json(readfile(ARGV[1] || '/etc/obhod/settings.json'));
+if (type(settings?.profile?.routing) != 'object' || type(settings?.config?.route?.rules) != 'array' ||
+    type(settings?.config?.dns?.servers) != 'array' || type(settings?.config?.inbounds) != 'array')
+    die('Invalid saved configuration graph');
 let config = settings.config;
 // Saved profiles carry a generated graph too. Apply the failover DNS correction
 // in RAM so old profiles do not need a flash rewrite or a manual LuCI save.
@@ -9,7 +13,7 @@ if (settings.profile.routing?.failoverEnabled && !settings.profile.routing?.dnsR
         dns.server = '8.8.8.8'; dns.type = 'tcp';
     }
 }
-let secret = trim(readfile('/var/run/obhod/controller-secret'));
+let secret = trim(readfile(root + '/controller-secret') || '');
 if (!match(secret, /^[a-f0-9-]{32,36}$/)) die('Missing controller secret');
 config.experimental ||= {};
 // Upgrade the runtime copy of old profiles without rewriting tunnels or rules.
@@ -108,4 +112,4 @@ if (ARGV[0] == 'experimental-1.15') {
         delete set.download_detour;
     }
 }
-if (!writefile('/var/run/obhod/config.json', sprintf('%J\n', config))) die('Cannot write runtime configuration');
+if (!writefile(root + '/config.json', sprintf('%J\n', config))) die('Cannot write runtime configuration');

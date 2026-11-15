@@ -35,11 +35,6 @@ prepare() {
 		chmod 600 "$RUN/controller-secret"
 	fi
 	capabilities=$(/usr/bin/sing-box obhod-capabilities 2>/dev/null)
-	if printf '%s\n' "$capabilities" | grep -qx obhod-experimental-1.15; then
-		ucode /usr/libexec/obhod/prepare.uc experimental-1.15 || { error 'Не удалось подготовить конфигурацию ядра 1.15.'; return 1; }
-	else
-		ucode /usr/libexec/obhod/prepare.uc || { error 'Не удалось подготовить конфигурацию службы.'; return 1; }
-	fi
 	# 1.13 introduced NFQUEUE before the native address-set filter. Require the
 	# fixed ordering; older 1.12 cores select destinations in nftables already.
 	if { [ "$1" -gt 1 ] || [ "$2" -ge 13 ]; } && ! printf '%s\n' "$capabilities" | grep -qx kernel-route-set-v1; then
@@ -47,13 +42,9 @@ prepare() {
 			error 'Не удалось установить обязательное ядро .5. Профиль сохранён; проверьте место, интернет и журнал core-upgrade-log.'; return 1;
 		}
 	fi
-	ucode /usr/libexec/obhod/kernel-route.uc "$RUN/config.json" || {
-		error 'Не удалось подготовить отбор трафика в nftables.'; return 1;
-	}
-	if /usr/bin/sing-box obhod-capabilities 2>/dev/null | grep -qx dns-pool-v1; then
-		ucode /usr/libexec/obhod/native-dns.uc || { error 'Не удалось подготовить встроенную группу DNS.'; return 1; }
+	if ! reason=$(/usr/libexec/obhod/prepare-config prepare "$STATE" "$RUN"); then
+		error "$reason"; return 1
 	fi
-	ucode /usr/libexec/obhod/dns-filter-config.uc || { error 'Не удалось подготовить DNS-фильтр.'; return 1; }
 	# Older APK updaters install the two application packages offline. Keep the
 	# optional socket module out of their hard dependencies and prepare it here,
 	# after the package transaction, only when the configured DNS needs it.
@@ -62,7 +53,6 @@ prepare() {
 			error 'Не удалось подготовить компонент DNS. Проверьте доступ к репозиторию OpenWrt и журнал dns-component-log.'; return 1;
 		}
 	fi
-	ucode /usr/libexec/obhod/dns-pool-config.uc || { error 'Не удалось подготовить группу DNS. Проверьте список серверов в LuCI.'; return 1; }
 	for pool in direct proxy bootstrap filter; do
 		file="$RUN/dns-pool-$pool.json"
 		[ -s "$file" ] || continue
@@ -70,9 +60,6 @@ prepare() {
 			error 'Не удалось запустить группу DNS. Проверьте пакет ucode-mod-socket и настройки.'; return 1;
 		}
 	done
-	/usr/bin/sing-box check -c "$RUN/config.json" >/dev/null 2>&1 || {
-		error 'Ядро отклонило конфигурацию. Проверьте версию и поддерживаемые протоколы.'; return 1;
-	}
 	# An unchanged save is safe only for the sources which prepared this run.
 	# App updates and external settings edits must still take the restart path.
 	set -- "$STATE" "$RUN/config.json" /usr/bin/sing-box /usr/share/obhod/version \

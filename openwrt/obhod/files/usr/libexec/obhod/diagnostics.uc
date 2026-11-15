@@ -8,7 +8,7 @@ let missing = filter(devices, name => !access('/sys/class/net/' + name));
 let intercept = !!running && !!access('/sys/class/net/obhod-tun') && !!access(work + '/firewall-ok');
 let routeOk = !!running && !!route.ok && !!route.diagnostic && route.delay > 0 && time() - route.checkedAt < 90;
 let checks = [
-    { name: 'Конфигурация', ok: access(work + '/config-ok'), message: access(work + '/config-ok') ? 'Ядро принимает сохранённые настройки.' : 'Ядро отклонило конфигурацию или не установлено.' },
+    { name: 'Конфигурация', ok: access(work + '/config-ok'), message: access(work + '/config-ok') ? 'Ядро принимает сохранённые настройки.' : (trim(readfile(work + '/config-error') || '') || 'Проверка конфигурации не завершилась.') },
     { name: 'Служба', ok: running, message: running ? 'Служба запущена и готова.' : 'Обход выключен. Включите его для проверки маршрута.' },
     { name: 'LAN-интерфейсы', ok: !length(missing), message: length(missing) ? 'Не найдены: ' + join(', ', missing) : 'Найдены: ' + join(', ', devices) },
     { name: 'Перехват трафика', ok: intercept, message: intercept ? 'TUN-интерфейс и таблица sing-box в nftables найдены.' : 'Требуются работающий TUN и таблица sing-box в nftables.' },

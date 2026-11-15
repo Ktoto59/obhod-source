@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { readfile, writefile, unlink } from 'fs';
-let root = '/var/run/obhod/';
-let settings = json(readfile('/etc/obhod/settings.json'));
+let root = (ARGV[1] || '/var/run/obhod') + '/';
+let settings = json(readfile(ARGV[0] || '/etc/obhod/settings.json'));
 let config = json(readfile(root + 'config.json'));
 let mode = settings.options?.dnsPoolMode || 'single';
 if (!match(mode, /^(single|fallback|parallel|balanced)$/)) die('Invalid DNS pool mode');

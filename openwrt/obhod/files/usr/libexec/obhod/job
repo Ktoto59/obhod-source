@@ -59,8 +59,9 @@ fi
 work=$(mktemp -d "$RUN/diagnostics.XXXXXX")
 printf '%s\n' "$work" > "$LOCK/work"
 printf 'Проверяем конфигурацию, DNS и выбранный маршрут…\n' > "$RUN/job-message"
-jsonfilter -i /etc/obhod/settings.json -e '@.config' > "$work/config" 2>/dev/null || true
-if /usr/bin/sing-box check -c "$work/config" >/dev/null 2>&1; then touch "$work/config-ok"; fi
+if /usr/libexec/obhod/prepare-config validate /etc/obhod/settings.json > "$work/config-error"; then
+    touch "$work/config-ok"
+fi
 if [ -f "$RUN/ready" ]; then
     nft list table inet sing-box >/dev/null 2>&1 && touch "$work/firewall-ok" || true
     if [ -s "$RUN/dns-pool-filter.json" ] &&

@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """Check the generated runtime graph with real cores and OpenWrt ucode."""
 import argparse
+from copy import deepcopy
 import importlib.util
 import json
+import os
 from pathlib import Path
 import shutil
+import stat
+import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -33,9 +37,17 @@ profile.routing.remoteLists = [
 ];
 console.log(JSON.stringify([false, true].map(ipv6 => {
   const options = { ipv6, downloadListsViaProxy: ipv6 };
-  return { options, profile, config: generateRouterConfig(profile, options) };
+  return { version: 1, options, profile, config: generateRouterConfig(profile, options) };
 })));
 """
+
+
+def config_diagnostic(lab):
+    token = run('chroot', lab, '/usr/bin/ucode', '/usr/libexec/obhod/operation.uc',
+                'acquire', 'job', '', os.getpid()).strip()
+    run('chroot', lab, '/usr/libexec/obhod/job', 'worker', 'diagnostics', token)
+    report = json.loads((lab / 'var/run/obhod/diagnostics.json').read_text())
+    return next(check for check in report['checks'] if check['name'] == 'Конфигурация')
 
 
 def check(baseline, experimental, tools):
@@ -43,37 +55,87 @@ def check(baseline, experimental, tools):
     legacy = ROOT / '.tmp/openwrt-legacy-settings.json'
     run('node', str(ROOT / 'scripts/check-openwrt-config.js'))
     fixtures.append(json.loads(legacy.read_text()))
-    libexec = ROOT / 'openwrt/obhod/files/usr/libexec/obhod'
+    app = ROOT / 'openwrt/obhod/files'
     for manager in packages.ROOTFS:
         with tempfile.TemporaryDirectory(prefix='obhod-config-check-') as temporary:
             lab = Path(temporary) / 'rootfs'
             packages.rootfs(manager, tools, lab)
+            shutil.copytree(app, lab, dirs_exist_ok=True)
+            for script in (lab / 'usr/libexec').rglob('*'):
+                if script.is_file():
+                    script.chmod(0o755)
+            for directory in ('etc/obhod', 'var/lock', 'var/run/obhod', 'tmp/prepared'):
+                (lab / directory).mkdir(parents=True, exist_ok=True)
+            device = lab / 'dev/null'
+            device.unlink(missing_ok=True)
+            os.mknod(device, stat.S_IFCHR | 0o666, os.makedev(1, 3))
             state = lab / 'etc/obhod/settings.json'
-            state.parent.mkdir()
             runtime = lab / 'var/run/obhod'
-            runtime.mkdir(parents=True)
-            (runtime / 'controller-secret').write_text('00000000-0000-0000-0000-000000000000\n')
-            steps = ('prepare.uc', 'kernel-route.uc', 'native-dns.uc', 'dns-filter-config.uc', 'dns-pool-config.uc')
-            for step in steps:
-                shutil.copyfile(libexec / step, lab / 'tmp' / step)
-            for binary, name in ((baseline, 'baseline'), (experimental, 'experimental')):
-                shutil.copyfile(binary, lab / 'tmp' / name)
-                (lab / 'tmp' / name).chmod(0o755)
-            for fixture in fixtures:
+            secret = '11111111-1111-1111-1111-111111111111'
+            (lab / 'tmp/prepared/controller-secret').write_text(secret + '\n')
+            (runtime / 'controller-secret').write_text(secret + '\n')
+            (runtime / 'ready').touch()
+            (runtime / 'run-pid').write_text(str(os.getpid()))
+            (runtime / 'config.json').write_text('active config sentinel')
+            control = lab / 'usr/libexec/obhod/control'
+            control.write_text('#!/bin/sh\ntouch /tmp/service-touched\nexit 1\n')
+            core = lab / 'usr/bin/sing-box'
+            core.unlink(missing_ok=True)
+            prepare = ('chroot', lab, '/usr/libexec/obhod/prepare-config')
+            for index, fixture in enumerate(fixtures):
                 saved = json.dumps(fixture, sort_keys=True)
                 state.write_text(saved)
                 variants = {}
-                for name in ('baseline', 'experimental'):
-                    for step in steps:
-                        CLI = ['chroot', lab, '/usr/bin/ucode', '/tmp/' + step]
-                        if step == 'kernel-route.uc':
-                            CLI.append('/var/run/obhod/config.json')
-                        if step == 'prepare.uc' and name == 'experimental':
-                            CLI.append('experimental-1.15')
-                        run(*CLI)
-                    run('chroot', lab, '/tmp/' + name, 'check', '-c', '/var/run/obhod/config.json')
+                for binary, name in ((baseline, 'baseline'), (experimental, 'experimental')):
+                    staged_core = core.with_name('sing-box.staged')
+                    shutil.copyfile(binary, staged_core)
+                    staged_core.chmod(0o755)
+                    staged_core.replace(core)
+                    run(*prepare, 'prepare', '/etc/obhod/settings.json', '/tmp/prepared')
+                    run(*prepare, 'validate', '/etc/obhod/settings.json')
                     assert state.read_text() == saved
-                    variants[name] = json.loads((runtime / 'config.json').read_text())
+                    variants[name] = json.loads((lab / 'tmp/prepared/config.json').read_text())
+
+                    broken = deepcopy(fixture)
+                    # Older fixtures are loadable on startup but LuCI sends the
+                    # current envelope when a candidate is saved.
+                    broken['version'] = 1
+                    broken['profile']['version'] = 6
+                    broken['config']['outbounds'][-1]['type'] = 'secret-fixture-invalid-type'
+                    broken_json = json.dumps(broken)
+                    candidate = lab / 'tmp/candidate.json'
+                    candidate.write_text(broken_json)
+                    rejected = subprocess.run([*map(str, prepare), 'validate', '/tmp/candidate.json'],
+                                              text=True, capture_output=True)
+                    assert rejected.returncode != 0 and (
+                        'Ядро отклонило' in rejected.stdout or 'Ядро не поддерживает' in rejected.stdout
+                    ), rejected
+                    assert 'secret-fixture' not in rejected.stdout + rejected.stderr
+                    rpc = subprocess.run(
+                        ['chroot', str(lab), '/usr/libexec/rpcd/obhod', 'call', 'apply'],
+                        input=json.dumps({'settings': broken_json, 'start': True}),
+                        text=True, capture_output=True, check=True)
+                    response = json.loads(rpc.stdout)
+                    assert not response['ok'] and 'Прежние настройки сохранены' in response['error'], response
+                    assert 'secret-fixture' not in rpc.stdout + rpc.stderr
+                    assert state.read_text() == saved
+                    assert (runtime / 'config.json').read_text() == 'active config sentinel'
+                    assert (runtime / 'controller-secret').read_text().strip() == secret
+                    assert (runtime / 'ready').exists() and (runtime / 'run-pid').read_text() == str(os.getpid())
+                    assert not (lab / 'tmp/service-touched').exists()
+                    assert not list((lab / 'tmp').glob('obhod-config.*'))
+
+                    if index == 0:
+                        # Exercise the real diagnostic worker without network probes.
+                        (runtime / 'ready').unlink()
+                        try:
+                            assert config_diagnostic(lab)['ok']
+                            state.write_text(broken_json)
+                            failed = config_diagnostic(lab)
+                            assert not failed['ok'] and 'secret-fixture' not in failed['message'], failed
+                        finally:
+                            state.write_text(saved)
+                            (runtime / 'ready').touch()
                 old, new = variants.values()
                 for config in (old, new):
                     route = config['route']

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Upgrade the runtime graph too, without rewriting saved profiles or FakeIP.
 import { readfile, writefile, unlink } from 'fs';
-let root = '/var/run/obhod/';
-let settings = json(readfile('/etc/obhod/settings.json'));
+let root = (ARGV[1] || '/var/run/obhod') + '/';
+let settings = json(readfile(ARGV[0] || '/etc/obhod/settings.json'));
 let config = json(readfile(root + 'config.json'));
 let file = root + 'dns-pool-filter.json';
 unlink(file);

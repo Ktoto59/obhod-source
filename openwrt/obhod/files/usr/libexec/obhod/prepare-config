@@ -1,0 +1,62 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+set -eu
+umask 077
+
+fail() { printf '%s\n' "$1"; exit 1; }
+lib=/usr/libexec/obhod
+core=/usr/bin/sing-box
+state=$2
+[ -s "$state" ] || fail 'Сохранённого профиля нет или файл настроек пуст.'
+[ -x "$core" ] || fail 'Ядро sing-box не установлено.'
+
+case "$1" in
+    prepare) work=$3 ;;
+    validate)
+        work=$(mktemp -d /tmp/obhod-config.XXXXXX) || fail 'Не удалось создать каталог для проверки.'
+        trap 'rm -rf "$work"' EXIT
+        trap 'exit 1' INT TERM
+        cp "$state" "$work/settings.json" || fail 'Не удалось прочитать профиль для проверки.'
+        state="$work/settings.json"
+        # The controller is never started by check. Use a placeholder instead of
+        # copying the secret of the running instance or creating a new one.
+        printf '00000000-0000-0000-0000-000000000000\n' > "$work/controller-secret"
+        ;;
+    *) exit 2 ;;
+esac
+
+capabilities=$("$core" obhod-capabilities 2>/dev/null) || capabilities=
+mode=
+if printf '%s\n' "$capabilities" | grep -qx obhod-experimental-1.15; then mode=experimental-1.15; fi
+ucode "$lib/prepare.uc" "$mode" "$state" "$work" >/dev/null 2>&1 ||
+    fail 'Не удалось подготовить граф сохранённого профиля. Проверьте структуру конфигурации и совместимость ядра.'
+ucode "$lib/kernel-route.uc" "$work/config.json" >/dev/null 2>&1 ||
+    fail 'Не удалось подготовить правила отбора трафика.'
+if printf '%s\n' "$capabilities" | grep -qx dns-pool-v1; then
+    ucode "$lib/native-dns.uc" "$state" "$work" >/dev/null 2>&1 ||
+        fail 'Не удалось подготовить встроенную группу DNS.'
+fi
+ucode "$lib/dns-filter-config.uc" "$state" "$work" >/dev/null 2>&1 ||
+    fail 'Не удалось подготовить DNS-фильтр перед FakeIP.'
+ucode "$lib/dns-pool-config.uc" "$state" "$work" >/dev/null 2>&1 ||
+    fail 'Не удалось подготовить группу DNS. Проверьте режим и список серверов.'
+
+# The core can include input values in a decode or constructor error.
+# Return fixed messages and keep its raw output in memory only.
+if ! detail=$("$core" check -c "$work/config.json" 2>&1); then
+    case "$detail" in
+        *'unknown field'*|*'deprecated'*|*'removed in sing-box'*)
+            fail 'Ядро отклонило поле конфигурации. Проверьте совместимость формата с установленной версией.' ;;
+        *'unknown outbound type'*|*'unknown endpoint type'*|*'not included in this build'*|*'not available in this build'*)
+            fail 'Ядро не поддерживает один из настроенных протоколов. Проверьте выбранный вариант ядра.' ;;
+        *'outbounds['*|*'endpoints['*)
+            fail 'Ядро отклонило параметры подключения. Проверьте протокол и поля сервера.' ;;
+        *'inbounds['*)
+            fail 'Ядро отклонило параметры входящего подключения. Проверьте настройки TUN и LAN.' ;;
+        *'dns.'*)
+            fail 'Ядро отклонило параметры DNS. Проверьте резолверы и правила DNS.' ;;
+        *'route.'*)
+            fail 'Ядро отклонило параметры маршрутизации. Проверьте правила и списки.' ;;
+        *) fail 'Ядро отклонило конфигурацию. Проверьте версию ядра и настройки профиля.' ;;
+    esac
+fi

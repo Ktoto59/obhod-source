@@ -200,7 +200,7 @@ class Audit(unittest.TestCase):
     def test_legacy_failover_dns_is_migrated_only_in_ram(self):
         for failover, custom, expected in [(True, False, '8.8.8.8'), (False, False, '10.8.0.1'), (True, True, '10.8.0.1')]:
             state = {'profile': {'routing': {'failoverEnabled':failover, 'dnsResolverEnabled':custom}, 'tunnels':[]},
-                     'config': {'dns':{'servers':[{'tag':'proxy-dns','type':'udp','server':'10.8.0.1','detour':'proxy'},
+                     'config': {'inbounds': [], 'dns':{'servers':[{'tag':'proxy-dns','type':'udp','server':'10.8.0.1','detour':'proxy'},
                                                  {'tag':'fake-dns','type':'fakeip'}]}, 'route':{'rules':[]}}}
             saved = self.write('etc/obhod/settings.json', json.dumps(state)).read_bytes()
             self.write('var/run/obhod/controller-secret', '11111111-2222-4333-8444-555555555555')
@@ -212,13 +212,16 @@ class Audit(unittest.TestCase):
             self.assertEqual((self.lab/'etc/obhod/settings.json').read_bytes(), saved)
 
     def test_identical_apply_skips_core_check(self):
-        state = {'version':1, 'profile':{'version':6}, 'config':{'route':{'final':'direct'}}}
+        state = {'version': 1, 'profile': {'version': 6, 'routing': {}}, 'config': {
+            'inbounds': [{'type': 'tun'}],
+            'dns': {'servers': [{'tag': 'fake-dns', 'type': 'fakeip', 'inet4_range': '198.18.0.0/15'}]},
+            'route': {'rules': [], 'final': 'direct'}}}
         self.write('etc/obhod/settings.json', json.dumps(state))
         self.write('var/run/obhod/ready', '')
         self.write('var/run/obhod/run-pid', str(os.getpid()))
         self.run_in('/sbin/uci', 'set', 'obhod.main.enabled=1')
         self.run_in('/sbin/uci', 'commit', 'obhod')
-        self.write('usr/bin/sing-box', '#!/bin/sh\necho check >> /tmp/check-calls\nexit 1\n')
+        self.write('usr/bin/sing-box', '#!/bin/sh\n[ "$1" != check ] || echo check >> /tmp/check-calls\nexit 1\n')
         self.write('usr/libexec/obhod/control', '#!/bin/sh\necho control >> /tmp/control-calls\nexit 1\n')
         self.write('bin/mktemp', '#!/bin/sh\ncase "$1" in /etc/*) echo flash >> /tmp/flash-staging;; esac\nexec /bin/busybox mktemp "$@"\n')
         r = self.run_in('/bin/sh', '-c', 'sha256sum /etc/obhod/settings.json /usr/bin/sing-box /usr/libexec/obhod/* /usr/share/obhod/version /etc/init.d/obhod > /var/run/obhod/prepared.sha')
@@ -235,7 +238,8 @@ class Audit(unittest.TestCase):
         del state['profile']['name']
         for path in ['usr/libexec/obhod/prepare.uc', 'usr/bin/sing-box', 'usr/share/obhod/version']:
             source = self.lab/path; saved = source.read_bytes()
-            source.write_bytes(saved + b'\n# changed app/core source\n')
+            comment = b'//' if source.suffix == '.uc' else b'#'
+            source.write_bytes(saved + b'\n' + comment + b' changed app/core source\n')
             self.assertFalse(self.rpc('apply', {'settings':json.dumps(state), 'start':True})['ok'])
             source.write_bytes(saved)
         self.assertEqual((self.lab/'tmp/check-calls').read_text().count('check'), 4)
