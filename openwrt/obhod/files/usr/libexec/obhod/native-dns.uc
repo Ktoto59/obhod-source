@@ -10,13 +10,10 @@ let mode = settings.options?.dnsPoolMode || 'single';
 if (!settings.profile.routing.dnsResolverEnabled || mode == 'single' || mode == 'fallback') exit(0);
 if (!match(mode, /^(parallel|balanced)$/)) die('Invalid DNS pool mode');
 let removed = [];
-for (let group in ['direct','proxy','bootstrap']) {
-    let tag = group == 'bootstrap' ? 'bootstrap-dns' : group + '-dns';
+for (let group in ['direct','proxy']) {
+    let tag = group + '-dns';
     let gateway = filter(config.dns.servers, s => s.tag == tag)[0];
-    if (gateway?.server != '127.0.0.1' || gateway.server_port != (group=='direct'?1153:group=='proxy'?1154:1155)) {
-        if (group != 'bootstrap') die('Invalid portable DNS pool gateway');
-        continue;
-    }
+    if (gateway?.server != '127.0.0.1' || gateway.server_port != (group=='direct'?1153:1154)) die('Invalid portable DNS pool gateway');
     let members = filter(config.dns.servers, s => index(s.tag || '', 'dns-upstream-'+group+'-') == 0);
     if (length(members)<2 || length(members)>4) die('Invalid native DNS pool members');
     let replacement = { type:'obhod-pool', tag, mode, servers:map(members,s=>s.tag) };

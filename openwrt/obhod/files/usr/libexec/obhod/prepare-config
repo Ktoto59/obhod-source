@@ -60,3 +60,7 @@ if ! detail=$("$core" check -c "$work/config.json" 2>&1); then
         *) fail 'Ядро отклонило конфигурацию. Проверьте версию ядра и настройки профиля.' ;;
     esac
 fi
+
+# This router also runs a separate encrypted bootstrap graph.
+"$core" check -c "$work/bootstrap.json" >/dev/null 2>&1 ||
+    fail 'Ядро отклонило конфигурацию Bootstrap DoH.'

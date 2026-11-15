@@ -1,6 +1,7 @@
 const { DEFAULT_CONFIG, validateConfig } = require('../../shared/profile');
 const { generateConfig, tunnelTag } = require('../../shared/config-generator');
 const { configureDnsPool } = require('./dns-pool');
+const { BOOTSTRAP_PORTS, bootstrapAddresses } = require('./bootstrap-doh');
 
 function configureFakeIp(config, profile, options) {
   const selectedDns = config.dns.rules.filter(rule => rule.server === 'proxy-dns').map(rule => {
@@ -113,6 +114,10 @@ function generateRouterConfig(input, options = {}) {
     throw new Error('Укажите LAN-устройства Linux, например br-lan.');
   }
   const profile = validateConfig({ ...input, routing: { ...input.routing, trafficMode: 'tun', applicationRules: [] } });
+  if (options.bootstrapDoH != null) bootstrapAddresses(options.bootstrapDoH);
+  if (profile.routing.listenPort === 1155 || BOOTSTRAP_PORTS.includes(profile.routing.listenPort)) {
+    throw new Error('Локальный порт занят Bootstrap DoH. Выберите другой порт прокси.');
+  }
   const config = generateConfig(profile);
   const tun = config.inbounds.find((inbound) => inbound.type === 'tun');
   // lo enables the native output chains too: router tools receive FakeIP from

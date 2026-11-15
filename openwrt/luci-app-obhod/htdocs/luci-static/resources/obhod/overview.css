@@ -117,7 +117,7 @@ to { opacity:1;transform:none }
 .obhod-app .ob-delete:hover { color:var(--ob-danger);background:var(--ob-raised) }
 .obhod-app .ob-search { position:relative;flex:1 }
 .obhod-app .ob-search input { padding-left:32px }
-.obhod-app .ob-search::before { content:"⌕";position:absolute;left:11px;top:7px;color:var(--ob-faint);font-size:20px }
+.obhod-app .ob-search::before { content:"\2315";position:absolute;left:11px;top:7px;color:var(--ob-faint);font-size:20px }
 .obhod-app .ob-domain-controls { display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.1fr);gap:12px;margin-bottom:18px }
 .obhod-app .ob-domain-controls .ob-search { min-width:0 }
 .obhod-app .ob-domain-add { display:flex;gap:8px;min-width:0 }
@@ -311,7 +311,7 @@ to { opacity:1;transform:none }
 .obhod-app .ob-update-details { padding: 0; overflow: hidden; }
 .obhod-app .ob-update-details > summary { display: flex; align-items: center; gap: 10px; padding: 15px 18px; cursor: pointer; list-style: none; }
 .obhod-app .ob-update-details > summary::-webkit-details-marker { display: none; }
-.obhod-app .ob-update-details > summary::before { content: '↻'; color: var(--ob-accent); font-size: 18px; }
+.obhod-app .ob-update-details > summary::before { content: '\21bb'; color: var(--ob-accent); font-size: 18px; }
 .obhod-app .ob-update-summary-main { flex: 1 1 auto; }
 .obhod-app .ob-update-summary-main > strong + strong { color: var(--ob-muted); font-size: 11.5px; font-weight: 450; }
 .obhod-app .ob-update-summary-message { color: var(--ob-muted); font-size: 11.5px; overflow-wrap: anywhere; }
@@ -344,7 +344,7 @@ to { opacity:1;transform:none }
 .obhod-app .ob-footer { flex-wrap: wrap; }
 .obhod-app .ob-footer > .ob-help { color: var(--ob-text); font-size: 12px; font-weight: 650; }
 .obhod-app .ob-footer-actions { flex-wrap: wrap; }
-.obhod-app .is-dirty::before { content: '●'; color: var(--ob-accent); margin-right: 7px; font-size: 9px; }
+.obhod-app .is-dirty::before { content: '\25cf'; color: var(--ob-accent); margin-right: 7px; font-size: 9px; }
 @media (max-width: 980px) {
 .obhod-app .ob-header { margin-inline: -22px; padding-inline: 22px; }
 .obhod-app .ob-header .ob-live-route { display: none; }

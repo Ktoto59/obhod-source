@@ -8,6 +8,7 @@
 'require obhod.core as core';
 
 var status = rpc.declare({ object: 'obhod', method: 'status', nobatch: true });
+var dnsCheck = rpc.declare({ object: 'obhod', method: 'dnsCheck', params: ['settings'], nobatch: true });
 var routeStaleAge = rpc.declare({ object: 'obhod', method: 'routeStaleAge', params: ['minutes'], nobatch: true });
 var apply = rpc.declare({ object: 'obhod', method: 'apply', params: ['settings', 'start', 'upload'], nobatch: true });
 var upload = rpc.declare({ object: 'obhod', method: 'upload', params: ['action', 'upload', 'data', 'index'], nobatch: true });
@@ -25,13 +26,13 @@ var clearLogs = rpc.declare({ object: 'obhod', method: 'clearLogs', nobatch: tru
 var diagnostics = rpc.declare({ object: 'obhod', method: 'diagnostics', nobatch: true });
 var diagnose = rpc.declare({ object: 'obhod', method: 'diagnose', nobatch: true });
 var DNS_PRESETS = {
-  cloudflare: { title: 'Cloudflare', plain: '1.1.1.1', tls: 'one.one.one.one', https: ['cloudflare-dns.com', '/dns-query'], bootstrap: '1.1.1.1' },
-  google: { title: 'Google', plain: '8.8.8.8', tls: 'dns.google', https: ['dns.google', '/dns-query'], bootstrap: '8.8.8.8' },
-  quad9: { title: 'Quad9', plain: '9.9.9.9', tls: 'dns.quad9.net', https: ['dns.quad9.net', '/dns-query'], bootstrap: '9.9.9.9' },
-  'quad9-unfiltered': { title: 'Quad9 без фильтрации', plain: '9.9.9.10', tls: 'dns10.quad9.net', https: ['dns10.quad9.net', '/dns-query'], bootstrap: '9.9.9.10' },
-  adguard: { title: 'AdGuard', plain: '94.140.14.14', tls: 'dns.adguard-dns.com', https: ['dns.adguard-dns.com', '/dns-query'], bootstrap: '94.140.14.14' },
-  controld: { title: 'Control D', plain: '76.76.2.0', tls: 'p0.freedns.controld.com', https: ['freedns.controld.com', '/p0'], bootstrap: '76.76.2.0' },
-  'controld-ads': { title: 'Control D · блокировка рекламы', plain: '76.76.2.2', tls: 'p2.freedns.controld.com', https: ['freedns.controld.com', '/p2'], bootstrap: '76.76.2.2' }
+  cloudflare: { title: 'Cloudflare', tls: 'one.one.one.one', https: ['cloudflare-dns.com', '/dns-query'] },
+  google: { title: 'Google', tls: 'dns.google', https: ['dns.google', '/dns-query'] },
+  quad9: { title: 'Quad9', tls: 'dns.quad9.net', https: ['dns.quad9.net', '/dns-query'] },
+  'quad9-unfiltered': { title: 'Quad9 без фильтрации', tls: 'dns10.quad9.net', https: ['dns10.quad9.net', '/dns-query'] },
+  adguard: { title: 'AdGuard', tls: 'dns.adguard-dns.com', https: ['dns.adguard-dns.com', '/dns-query'] },
+  controld: { title: 'Control D', tls: 'p0.freedns.controld.com', https: ['freedns.controld.com', '/p0'] },
+  'controld-ads': { title: 'Control D · блокировка рекламы', tls: 'p2.freedns.controld.com', https: ['freedns.controld.com', '/p2'] }
 };
 
 function checked(node) { return node.checked === true; }
@@ -97,7 +98,7 @@ return view.extend({
     this.coreCatalog = data[5] || {unavailable:true};
     try { saved = data[1] ? JSON.parse(data[1]) : {}; }
     catch (_) { throw new Error('Не удалось прочитать профиль Обхода. Сохранённые настройки не изменены.'); }
-    this.profile = saved.profile || core.defaults();
+    this.profile = saved.profile ? core.validate(saved.profile) : core.defaults();
     if (!saved.profile && data[2]) {
       try {
         var defaults = JSON.parse(data[2]);
@@ -154,6 +155,7 @@ return view.extend({
       return E('option', {value:device.name}, device.label + (device.up ? '' : ' · неактивен'));
     })).concat([E('option',{value:'__manual__'},'Ввести вручную…')]));
     this.manageDns = checkbox(this.options.manageDns);
+    this.strictDns = checkbox(this.options.strictDns);
     this.ipv6 = checkbox(this.options.ipv6);
     this.disableQuic = checkbox(this.options.disableQuic);
     this.downloadLists = checkbox(this.options.downloadListsViaProxy);
@@ -161,16 +163,17 @@ return view.extend({
     this.dnsHeading = E('span');this.dnsSwitchCaption=E('span');this.dnsSwitchHelp=E('span');
     var routing = this.profile.routing;
     this.dnsEnabled = checkbox(routing.dnsResolverEnabled, function() { self.updateDnsFields(); });
-    this.dnsProtocol = E('select', {change:function() { self.applyDnsPreset(); }}, [['tls','DNS over TLS'],['https','DNS over HTTPS'],['udp','UDP'],['tcp','TCP']].map(function(item) { return E('option',{value:item[0]},item[1]); }));
-    this.dnsProtocol.value = routing.dnsProtocol || 'tls';
+    this.dnsProtocol = E('select', {change:function() { self.applyDnsPreset(); }}, [['tls','DNS over TLS'],['https','DNS over HTTPS']].map(function(item) { return E('option',{value:item[0]},item[1]); }));
+    var legacyDns = ['udp','tcp'].includes(routing.dnsProtocol) ? core.legacyDoH(routing.dnsServer) : null;
+    this.dnsProtocol.value = legacyDns ? 'https' : routing.dnsProtocol || 'tls';
     this.dnsPreset = E('select', {change:function() { self.applyDnsPreset(); }}, Object.keys(DNS_PRESETS).map(function(id) { return E('option',{value:id},DNS_PRESETS[id].title); }).concat([E('option',{value:'custom'},'Свой сервер')]));
-    this.dnsServer = E('input',{type:'text',value:routing.dnsServer || 'one.one.one.one',input:function(){self.dnsPreset.value='custom';}});
-    this.dnsBootstrap = E('input',{type:'text',value:routing.dnsBootstrap || '1.1.1.1',input:function(){self.dnsPreset.value='custom';}});
-    this.dnsPath = E('input',{type:'text',value:routing.dnsPath || '/dns-query',input:function(){self.dnsPreset.value='custom';}});
+    this.dnsServer = E('input',{type:'text',value:legacyDns ? legacyDns[0] : routing.dnsServer || 'one.one.one.one',input:function(){self.dnsPreset.value='custom';}});
+    this.dnsPath = E('input',{type:'text',value:legacyDns ? legacyDns[1] : routing.dnsPath || '/dns-query',input:function(){self.dnsPreset.value='custom';}});
     this.dnsTtl = E('input',{type:'number',min:10,max:86400,value:routing.dnsTtl || 60});
     this.dnsPreset.value = 'custom';
     Object.keys(DNS_PRESETS).forEach(function(id) { var preset=DNS_PRESETS[id], protocol=self.dnsProtocol.value;
-      if (self.dnsServer.value === (protocol==='https'?preset.https[0]:protocol==='tls'?preset.tls:preset.plain) && self.dnsBootstrap.value===preset.bootstrap) self.dnsPreset.value=id;
+      if (self.dnsServer.value === (protocol==='https'?preset.https[0]:preset.tls) &&
+          (protocol!=='https' || self.dnsPath.value===preset.https[1])) self.dnsPreset.value=id;
     });
     this.dnsPathField = field('Путь DNS over HTTPS', this.dnsPath, 'Обычно /dns-query.');
     this.dnsPoolMode = E('select',{change:function(){self.updateDnsFields();}},[
@@ -182,9 +185,23 @@ return view.extend({
     var dnsHost = dnsValue.includes(':') ? '['+dnsValue+']' : dnsValue;
     var currentDns = (routing.dnsProtocol || 'tls')+'://'+dnsHost+((routing.dnsProtocol==='https')?(routing.dnsPath||'/dns-query'):'');
     this.dnsUpstreams = E('textarea',{rows:4,spellcheck:'false',autocomplete:'off',placeholder:'https://1.1.1.1/dns-query\nhttps://1.0.0.1/dns-query'});
-    this.dnsUpstreams.value = Array.isArray(this.options.dnsUpstreams) ? this.options.dnsUpstreams.join('\n') : this.options.dnsUpstreams || currentDns;
-    this.dnsBootstrapServers = E('textarea',{rows:2,spellcheck:'false',placeholder:'1.1.1.1\n8.8.8.8'});
-    this.dnsBootstrapServers.value = Array.isArray(this.options.dnsBootstrapServers) ? this.options.dnsBootstrapServers.join('\n') : this.options.dnsBootstrapServers || routing.dnsBootstrap || '1.1.1.1';
+    var upstreams = Array.isArray(this.options.dnsUpstreams) ? this.options.dnsUpstreams : (this.options.dnsUpstreams || currentDns).split(/\r?\n/);
+    var knownBootstrap = core.bootstrapAddresses();
+    this.dnsUpstreams.value = upstreams.map(function(value, position) {
+      if (!value.trim() || /^(https|tls):\/\//i.test(value)) return value;
+      var address = value.trim().replace(/^(udp|tcp):\/\//i, '').replace(/:53$/, '');
+      if (knownBootstrap.includes(address)) return 'https://'+address+'/dns-query';
+      var replacement = core.legacyDoH(address);
+      if (replacement[0] === 'cloudflare-dns.com') return 'https://'+knownBootstrap[position % knownBootstrap.length]+'/dns-query';
+      return 'https://'+replacement[0]+replacement[1];
+    }).join('\n');
+    this.dnsBootstrapServers = E('textarea',{rows:4,spellcheck:'false',placeholder:'1.1.1.1\n8.8.8.8'});
+    var bootstrap = this.options.bootstrapDoH != null ? this.options.bootstrapDoH
+      : core.legacyBootstrapAddresses(this.options.dnsBootstrapServers || routing.dnsBootstrapServers || routing.dnsBootstrap);
+    this.dnsBootstrapServers.value = core.bootstrapAddresses(bootstrap).join('\n');
+    this.dnsCheckResult = E('div',{'class':'ob-help','aria-live':'polite'});
+    this.dnsCheckButton = E('button',{type:'button','class':'cbi-button ob-button',
+      click:ui.createHandlerFn(this,function(){return self.checkDnsSettings();})},'Проверить DNS-серверы');
     this.dnsPrepareButton = E('button',{type:'button','class':'cbi-button ob-button',click:ui.createHandlerFn(this,function(){
       if(self.lastStatus.coreBusy || self.lastStatus.updateBusy || self.lastStatus.jobBusy)return Promise.resolve();
       return self.operation(function(){return service('dns-prepare');});
@@ -205,7 +222,7 @@ return view.extend({
     this.tolerance = E('select', {}, [80, 50, 20].map(function(value) { return E('option', { value: String(value) }, value + ' мс'); }));
     this.tolerance.value = String(this.profile.routing.failoverTolerance || 80);
     this.testUrl = E('input',{type:'url',value:this.profile.routing.testUrl,placeholder:'https://www.gstatic.com/generate_204'});
-    this.listInterval = E('select',{},['1h','6h','12h','24h'].map(function(value){return E('option',{value:value},value);}));
+    this.listInterval = E('select',{},[['1h','Каждый час'],['6h','Каждые 6 часов'],['12h','Каждые 12 часов'],['24h','Раз в сутки']].map(function(entry){return E('option',{value:entry[0]},entry[1]);}));
     this.listInterval.value = this.profile.routing.updateInterval;
     var local = this.profile.routing.localLists.filter(function(list) { return list.enabled; });
     this.domainText = E('textarea', { rows: 5 }, local.map(function(list) { return list.domains.join('\n'); }).join('\n'));
@@ -343,12 +360,12 @@ return view.extend({
     this.panels.protocols.appendChild(protocolGrid);
     var networkGrid=E('div',{'class':'ob-columns ob-network-grid'});
     networkGrid.appendChild(card('Локальная сеть', 'Трафик каких интерфейсов нужно обрабатывать. WAN обычно добавлять не нужно.', [field('Добавить интерфейс',this.interfaceSelect),field('Выбранные устройства / ручной ввод', this.interfaces, 'Обычно br-lan. Несколько имён укажите через запятую.')]));
-    this.dnsSingleFields = E('div',{'class':'ob-grid'},[field('Провайдер',this.dnsPreset),field('Протокол',this.dnsProtocol),field('DNS-сервер',this.dnsServer),field('Bootstrap IPv4',this.dnsBootstrap),this.dnsPathField]);
-    this.dnsPoolFields = E('div',{},[field('DNS-серверы группы',this.dnsUpstreams,'От двух до четырёх серверов, по одному в строке: IP, udp://, tcp://, tls:// или https:// с путём DoH. В режиме основного и резервных первый сервер — основной.'),
+    this.dnsSingleFields = E('div',{'class':'ob-grid'},[field('Провайдер',this.dnsPreset),field('Протокол',this.dnsProtocol),field('DNS-сервер',this.dnsServer),this.dnsPathField]);
+    this.dnsPoolFields = E('div',{},[field('DNS-серверы группы',this.dnsUpstreams,'От двух до четырёх серверов, по одному в строке. Форматы tls:// и https://. В режиме основного и резервных первый сервер — основной.'),
       E('p',{'class':'ob-note'},'Основной и резервные: каждый запрос начинается с первого сервера; следующий используется только при сетевой ошибке, тайм-ауте или повреждённом ответе. Любой корректный DNS-ответ, включая NXDOMAIN, пустой ответ, REFUSED, SERVFAIL и адрес блокировки, возвращается без опроса резервных. Резервные тоже должны поддерживать нужную фильтрацию на случай отказа основного.'),
       E('p',{'class':'ob-note'},'Параллельный и автоматический режимы могут предпочесть ответ другого сервера, включая обход блокировки NXDOMAIN или пустым ответом. Используйте в этих режимах только серверы с одинаковой политикой фильтрации.'),
-      field('Bootstrap DNS',this.dnsBootstrapServers,'До четырёх IP-адресов, по одному в строке. Разрешают имена DNS-серверов, серверов туннелей и узлов загрузки списков. При нескольких адресах используется тот же режим опроса.')]);
-    this.dnsSettings = E('div',{'class':'ob-dns-settings'},[field('Режим опроса DNS',this.dnsPoolMode),this.dnsSingleFields,this.dnsPoolFields,this.dnsPrepareButton,this.dnsPrepareHint]);
+      ]);
+    this.dnsSettings = E('div',{'class':'ob-dns-settings'},[field('Режим опроса DNS',this.dnsPoolMode),this.dnsSingleFields,this.dnsPoolFields]);
     this.dnsTtlField = field('TTL выбранных доменов, секунд',this.dnsTtl,'Обычно 60. После перезагрузки роутера старые служебные адреса в кэше устройств должны истечь.');
     networkGrid.appendChild(card(this.dnsHeading, 'Роутер отвечает на DNS-запросы устройств локальной сети.', [E('details',{'class':'ob-details ob-dns-explanation'},[E('summary',{},'Как работает DNS и FakeIP'),this.dnsHint]),switchField(this.dnsSwitchCaption,this.dnsEnabled,this.dnsSwitchHelp),
       this.dnsSettings,this.dnsTtlField,
@@ -356,6 +373,11 @@ return view.extend({
     this.panels.network.appendChild(networkGrid);
     this.panels.network.appendChild(E('details',{'class':'ob-accordion'},[E('summary',{},'Дополнительные параметры сети'),E('div',{'class':'ob-accordion-body'},[
       switchField('Настраивать DNS автоматически', this.manageDns, 'При выключении Обход вернёт прежние DNS-серверы. Поддерживается один экземпляр dnsmasq.'),
+      switchField('Блокировать внешний DNS на порту 53', this.strictDns, 'Блокирует UDP и TCP за пределами выбранных LAN-интерфейсов. DNS на самом роутере остаётся доступен.'),
+      field('Bootstrap DoH',this.dnsBootstrapServers,'До восьми серверов по порядку. Укажите известный IP или HTTPS-адрес с закреплённым IP, например https://dns.quad9.net/dns-query @ 9.9.9.9. Пустой список возвращает значения по умолчанию.'),
+      this.dnsCheckButton,this.dnsCheckResult,
+      E('p',{'class':'ob-help'},'Проверяет введённые адреса напрямую с роутера. Сохранять настройки не требуется.'),
+      this.dnsPrepareButton, this.dnsPrepareHint,
       switchField('Перехватывать IPv6', this.ipv6, 'Включайте, если IPv6 используется в вашей сети.'),
       switchField('Отключить QUIC',this.disableQuic,'Отклонять UDP на порту 443, чтобы браузеры использовали TCP. На работу самого туннеля не влияет.'),
       E('details', { 'class': 'ob-details' }, [E('summary', {}, 'Ручная настройка DNS'), E('p', { 'class': 'ob-help' }, 'При выключенной автоматической настройке укажите upstream dnsmasq: 127.0.0.1#1053. Для FakeIP отключите кэш dnsmasq (cachesize=0). Устройства должны использовать DNS этого роутера.')]) ])]));
@@ -552,9 +574,9 @@ return view.extend({
     var enabled = checked(this.dnsEnabled);
     this.dnsHeading.textContent='DNS и маршрутизация FakeIP';
     this.dnsSwitchCaption.textContent='Настроить общий DNS';
-    this.dnsSwitchHelp.textContent=this.dnsPoolMode.value==='single'?'Этот сервер используется для обычных доменов. По умолчанию — UDP 1.1.1.1.':'Для обычных доменов используется группа DNS. DNS выбранных сайтов сохраняет маршрут через туннель.';
+    this.dnsSwitchHelp.textContent='По умолчанию обычные домены разрешаются через Cloudflare DoH, а выбранные — через Google DoH в туннеле.';
     this.dnsHint.textContent='Выбранные домены сначала проверяются настроенным DNS через туннель. Служебный IP выдаётся только после разрешающего ответа; блокировки DNS сохраняются. Обычные сайты получают реальные адреса и идут напрямую. Устройства должны использовать DNS роутера; соответствия хранятся в /tmp.';
-    [this.dnsPreset,this.dnsProtocol,this.dnsServer,this.dnsBootstrap,this.dnsPath,this.dnsPoolMode,this.dnsUpstreams,this.dnsBootstrapServers].forEach(function(input){input.disabled=!enabled;});
+    [this.dnsPreset,this.dnsProtocol,this.dnsServer,this.dnsPath,this.dnsPoolMode,this.dnsUpstreams].forEach(function(input){input.disabled=!enabled;});
     this.dnsSingleFields.hidden = this.dnsPoolMode.value !== 'single';
     this.dnsPoolFields.hidden = this.dnsPoolMode.value === 'single';
     this.dnsTtl.disabled=false;this.dnsTtlField.hidden=false;
@@ -575,8 +597,8 @@ return view.extend({
 
   applyDnsPreset: function() {
     var preset=DNS_PRESETS[this.dnsPreset.value], protocol=this.dnsProtocol.value;
-    if(preset) { this.dnsServer.value=protocol==='https'?preset.https[0]:protocol==='tls'?preset.tls:preset.plain;
-      this.dnsBootstrap.value=preset.bootstrap; this.dnsPath.value=protocol==='https'?preset.https[1]:'/dns-query'; }
+    if(preset) { this.dnsServer.value=protocol==='https'?preset.https[0]:preset.tls;
+      this.dnsPath.value=protocol==='https'?preset.https[1]:'/dns-query'; }
     this.updateDnsFields();
   },
 
@@ -808,7 +830,7 @@ return view.extend({
     this.domainDeleted=null;this.domainUndo.hidden=true;this.domainUndoBar.hidden=true;
     this.savedDraft=JSON.parse(JSON.stringify({profile:this.profile,options:this.options}));
     this.savedFields={};
-    ['active','group','interval','tolerance','testUrl','listInterval','downloadLists','dnsEnabled','dnsPreset','dnsProtocol','dnsServer','dnsBootstrap','dnsPath','dnsPoolMode','dnsUpstreams','dnsBootstrapServers','dnsTtl','verboseLogs','domainText','cidrText','remoteText','interfaces','manageDns','ipv6','disableQuic'].forEach(function(key){
+    ['active','group','interval','tolerance','testUrl','listInterval','downloadLists','dnsEnabled','dnsPreset','dnsProtocol','dnsServer','dnsPath','dnsPoolMode','dnsUpstreams','dnsBootstrapServers','dnsTtl','verboseLogs','domainText','cidrText','remoteText','interfaces','manageDns','strictDns','ipv6','disableQuic'].forEach(function(key){
       self.savedFields[key]={value:self[key].value,checked:self[key].checked};
     });
   },
@@ -1020,6 +1042,31 @@ return view.extend({
     }).catch(function(error) { ui.addNotification(null, E('p', {}, error.message), 'error'); return false; }).finally(function() { ui.hideModal(); });
   },
 
+  checkDnsSettings: function() {
+    var self = this;
+    this.dnsCheckResult.textContent = 'Проверяем DNS-серверы…';
+    return Promise.resolve().then(function() {
+      var upstreams = [];
+      if (checked(self.dnsEnabled)) {
+        if (self.dnsPoolMode.value !== 'single') {
+          upstreams = self.dnsUpstreams.value.split(/\r?\n/).map(function(value){return value.trim();}).filter(Boolean);
+        } else {
+          var host = self.dnsServer.value.trim();
+          if (host.includes(':') && host[0] !== '[') host = '['+host+']';
+          upstreams = [self.dnsProtocol.value+'://'+host+(self.dnsProtocol.value==='https'?self.dnsPath.value.trim():'')];
+        }
+      }
+      return dnsCheck(JSON.stringify({bootstrap:core.bootstrapAddresses(self.dnsBootstrapServers.value),upstreams:upstreams}));
+    }).then(function(reply) {
+      if (!reply.ok) throw new Error(reply.error || 'Не удалось проверить DNS-серверы.');
+      self.dnsCheckResult.replaceChildren.apply(self.dnsCheckResult, reply.results.map(function(result) {
+        var label = result.kind==='bootstrap' ? 'Bootstrap DoH' : 'DNS-сервер';
+        var message = result.ok ? result.ms+' мс' : result.rcode===undefined ? 'нет ответа' : 'DNS-ответ без адреса (код '+result.rcode+')';
+        return E('div',{'class':result.ok?'':'is-error'},label+' '+result.number+' · '+message);
+      }));
+    }).catch(function(error) { self.dnsCheckResult.textContent = error.message; });
+  },
+
   save: function(run) {
     var self = this;
     return Promise.resolve().then(function() {
@@ -1038,7 +1085,6 @@ return view.extend({
       self.profile.routing.dnsResolverEnabled = checked(self.dnsEnabled);
       self.profile.routing.dnsProtocol = self.dnsProtocol.value;
       self.profile.routing.dnsServer = self.dnsServer.value.trim();
-      self.profile.routing.dnsBootstrap = self.dnsBootstrap.value.trim();
       self.profile.routing.dnsPath = self.dnsPath.value.trim();
       self.profile.routing.dnsTtl = Number(self.dnsTtl.value);
       self.profile.routing.enableDiagnostics = checked(self.verboseLogs);
@@ -1047,9 +1093,9 @@ return view.extend({
       self.profile.routing.remoteLists = lines(self.remoteText.value).map(function(url, index) {
         return { id: 'remote-' + index, name: 'Внешний список ' + (index + 1), enabled: true, kind: 'domains', url: url };
       });
-      self.options = { interfaces: lines(self.interfaces.value), manageDns: checked(self.manageDns), ipv6: checked(self.ipv6),disableQuic:checked(self.disableQuic),downloadListsViaProxy:checked(self.downloadLists),
+      self.options = { interfaces: lines(self.interfaces.value), manageDns: checked(self.manageDns), strictDns:checked(self.strictDns), ipv6: checked(self.ipv6),disableQuic:checked(self.disableQuic),downloadListsViaProxy:checked(self.downloadLists),
         dnsPoolMode:self.dnsPoolMode.value,dnsUpstreams:self.dnsUpstreams.value.split(/\r?\n/).map(function(v){return v.trim();}).filter(Boolean),
-        dnsBootstrapServers:self.dnsBootstrapServers.value.split(/\r?\n/).map(function(v){return v.trim();}).filter(Boolean) };
+        bootstrapDoH:core.bootstrapAddresses(self.dnsBootstrapServers.value) };
       self.profile = core.validate(self.profile);
       Object.keys(self.presetInputs).forEach(function(id) { self.presetInputs[id].checked = self.profile.routing.presetIds.includes(id); });
       var config = core.generate(self.profile, self.options);

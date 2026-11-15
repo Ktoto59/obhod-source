@@ -1,0 +1,53 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+set -eu
+umask 077
+lib=/usr/libexec/obhod
+core=/usr/bin/sing-box
+fail() { printf '{"ok":false,"error":"%s"}\n' "$1"; exit 0; }
+[ -x "$core" ] || fail 'Сначала установите ядро sing-box.'
+ucode -e 'import * as socket from "socket";' >/dev/null 2>&1 ||
+    fail 'Сначала нажмите «Подготовить DNS».'
+work=$(mktemp -d /tmp/obhod-dns-check.XXXXXX) || fail 'Не удалось создать каталог проверки.'
+pid=
+stop_core() {
+    if [ -n "$pid" ]; then
+        kill "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+        pid=
+    fi
+}
+finish() { stop_core; rm -rf "$work"; }
+trap finish EXIT
+trap 'exit 1' INT TERM HUP
+prepare() {
+    ucode "$lib/dns-check-config.uc" "$1" "$work" "$((20000 + $$ % 2500 * 12))" "$2" "$3" 2>/dev/null ||
+        fail 'Проверьте формат HTTPS/TLS-адресов и список Bootstrap DoH.'
+}
+probe() {
+    "$core" run -c "$work/config.json" > "$work/core.log" 2>&1 &
+    pid=$!
+    for i in 1 2 3; do
+        grep -q 'sing-box started' "$work/core.log" && break
+        kill -0 "$pid" 2>/dev/null || fail 'Ядро не смогло запустить изолированную проверку DNS.'
+        sleep 1
+    done
+    grep -q 'sing-box started' "$work/core.log" || fail 'Истекло время запуска проверки DNS.'
+    ucode "$lib/dns-check-probe.uc" "$work/tests.json" > "$work/$1" 2>/dev/null ||
+        fail 'Не удалось проверить DNS-серверы.'
+    stop_core
+}
+prepare "$1" bootstrap 0
+probe bootstrap
+# Resolve upstream hostnames through the first validated bootstrap in user order.
+selected=$(jsonfilter -i "$work/bootstrap" -e '@.results[@.ok=true].number' 2>/dev/null | head -n 1)
+[ -n "$selected" ] || selected=1
+prepare "$1" upstream "$selected"
+if jsonfilter -i "$work/tests.json" -e '@[0].port' >/dev/null 2>&1; then
+    probe upstream
+fi
+ucode -e '
+import { readfile } from "fs";
+let boot = json(readfile(ARGV[0] + "/bootstrap")), upstream = json(readfile(ARGV[0] + "/upstream") || "{}");
+printf("%J\n", { ok: true, results: [...boot.results, ...(upstream.results || [])] });
+' "$work"

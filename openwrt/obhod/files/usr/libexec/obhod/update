@@ -76,10 +76,11 @@ finish() {
 trap finish EXIT
 trap 'exit 130' INT TERM
 die() { message=$*; printf '%s\n' "$*" >&2; exit 1; }
+command -v curl >/dev/null 2>&1 || die 'Для обновления через Bootstrap DoH требуется пакет curl.'
 download() {
     # Limits include responses without Content-Length. No credentials in logs.
     { (ulimit -c 0; ulimit -f "$3"
-        uclient-fetch -q -T 60 --header='Accept: application/octet-stream' -O "$2" "$1"
+        /usr/libexec/obhod/secure-fetch --max-time 60 --header 'Accept: application/octet-stream' --output "$2" -- "$1"
     ); code=$?; [ "$code" = 0 ]; } 2>/dev/null
 }
 download 'https://raw.githubusercontent.com/Ktoto59/obhod-releases/main/openwrt/release.json' "$work/release.json" 64 || die 'Не удалось проверить версию. Проверьте интернет и время роутера.'

@@ -83,6 +83,10 @@ def check(baseline, experimental, tools):
             core.unlink(missing_ok=True)
             prepare = ('chroot', lab, '/usr/libexec/obhod/prepare-config')
             for index, fixture in enumerate(fixtures):
+                if index == 0:
+                    fixture['options']['bootstrapDoH'] = [
+                        '76.76.2.2', 'https://dns.quad9.net:8443/alternate @ 2620:fe::fe',
+                        '1.1.1.1', '1.0.0.1', '8.8.8.8', '8.8.4.4']
                 saved = json.dumps(fixture, sort_keys=True)
                 state.write_text(saved)
                 variants = {}
@@ -95,6 +99,14 @@ def check(baseline, experimental, tools):
                     run(*prepare, 'validate', '/etc/obhod/settings.json')
                     assert state.read_text() == saved
                     variants[name] = json.loads((lab / 'tmp/prepared/config.json').read_text())
+                    if index == 0:
+                        sidecar = json.loads((lab / 'tmp/prepared/bootstrap.json').read_text())
+                        first, second, *_ = sidecar['dns']['servers']
+                        assert [leaf['listen_port'] for leaf in sidecar['inbounds']] == [12061, 12062, 12063, 12064, 12067, 12068]
+                        assert (first['server'], first['path'], first['tls']['server_name']) == (
+                            '76.76.2.11', '/p2', 'freedns.controld.com')
+                        assert (second['server'], second['server_port'], second['path'], second['headers']['Host']) == (
+                            '2620:fe::fe', 8443, '/alternate', 'dns.quad9.net:8443')
 
                     broken = deepcopy(fixture)
                     # Older fixtures are loadable on startup but LuCI sends the

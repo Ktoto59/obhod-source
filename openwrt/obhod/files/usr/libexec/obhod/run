@@ -21,20 +21,43 @@ trap cleanup EXIT
 trap 'exit 143' TERM INT
 
 # Establish crash recovery before launching the core, including SIGKILL/OOM.
-if [ "$(jsonfilter -i /etc/obhod/settings.json -e '@.options.manageDns')" = true ]; then
+if [ "$(jsonfilter -i /etc/obhod/settings.json -e '@.options.strictDns')" = true ]; then
 	/usr/libexec/obhod/dns hold || exit 1
+fi
+/usr/libexec/obhod/dns guard "$$" || exit 1
+if [ "$(jsonfilter -i /etc/obhod/settings.json -e '@.options.manageDns')" != false ]; then
+	/usr/libexec/obhod/dns hold && /usr/libexec/obhod/dns apply "$$" || {
+		printf '%s\n' 'Не удалось переключить dnsmasq на шифрованный DNS Обхода.' > "$RUN/error"
+		exit 1
+	}
 fi
 rm -f "$RUN/log.pipe" "$RUN/telemetry.json"
 mkfifo -m 600 "$RUN/log.pipe" || exit 1
 ucode /usr/libexec/obhod/log.uc < "$RUN/log.pipe" &
 log_pid=$!
+attempt=0
+ports=$(jsonfilter -i "$RUN/bootstrap.json" -e '@.inbounds[*].listen_port')
+while [ "$attempt" -lt 5 ]; do
+	listening=1
+	for port in 1155 $ports; do
+		hex=$(printf '%04X' "$port")
+		grep -q "0100007F:$hex .* 0A " /proc/net/tcp || listening=0
+	done
+	[ "$listening" = 0 ] || break
+	sleep 1
+	attempt=$((attempt + 1))
+done
+if [ "${listening:-0}" != 1 ]; then
+	printf '%s\n' 'Не удалось запустить локальные слушатели Bootstrap DoH.' > "$RUN/error"
+	exit 1
+fi
 /usr/bin/sing-box run -c "$RUN/config.json" > "$RUN/log.pipe" 2>&1 &
 child=$!
 attempt=0
 while [ "$attempt" -lt 10 ]; do
 	sleep 1
 	kill -0 "$child" 2>/dev/null || exit 1
-	# The DNS listener must be accepting connections before dnsmasq is changed.
+	# Announce readiness only after the encrypted DNS path can accept queries.
 	listening=1
 	grep -q '0100007F:041D .* 0A ' /proc/net/tcp || listening=0
 	for pool in direct proxy bootstrap filter; do

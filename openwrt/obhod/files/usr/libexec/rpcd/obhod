@@ -17,7 +17,7 @@ reply() {
 operation() { ucode /usr/libexec/obhod/operation.uc "$@"; }
 
 [ "$1" = list ] && {
-	printf '%s\n' '{"status":{},"upload":{"action":"string","upload":"string","data":"string","index":0},"routeStaleAge":{"minutes":"string"},"apply":{"settings":"string","start":true,"upload":"string"},"start":{},"stop":{},"subscription":{"url":"string"},"installCore":{"profile":"string","version":"string"},"removeCore":{},"coreVersions":{},"coreSizes":{},"update":{"action":"string"},"interfaces":{},"logs":{},"clearLogs":{},"diagnostics":{},"service":{"action":"string"},"diagnose":{}}'
+	printf '%s\n' '{"status":{},"upload":{"action":"string","upload":"string","data":"string","index":0},"routeStaleAge":{"minutes":"string"},"dnsCheck":{"settings":"string"},"apply":{"settings":"string","start":true,"upload":"string"},"start":{},"stop":{},"subscription":{"url":"string"},"installCore":{"profile":"string","version":"string"},"removeCore":{},"coreVersions":{},"coreSizes":{},"update":{"action":"string"},"interfaces":{},"logs":{},"clearLogs":{},"diagnostics":{},"service":{"action":"string"},"diagnose":{}}'
 	exit 0
 }
 [ "$1" = call ] || exit 1
@@ -30,6 +30,13 @@ cat > "$request"
 jsonfilter -i "$request" -e '@' >/dev/null 2>&1 || { reply 0 'Некорректный запрос.'; exit 0; }
 
 case "$2" in
+	dnsCheck)
+		token=$(operation acquire apply '' "$$") || { reply 0 'Другая операция ещё выполняется.'; exit 0; }
+		trap 'rm -f "$request"; operation release apply "$token" "$$"' EXIT
+		exec 9>/var/lock/obhod-apply.lock/lease || exit 1
+		operation hold apply "$token" "$$" || exit 1
+		/usr/libexec/obhod/dns-check "$request"
+		;;
 	upload)
 		ucode /usr/libexec/obhod/upload.uc "$request"
 		;;
@@ -69,7 +76,9 @@ case "$2" in
 		json_add_string updateMessage "$(cat "$RUN/update-message" 2>/dev/null)"
 		json_add_string availableVersion "$available_version"
 		json_add_boolean updateAvailable "$(if [ "$available_version" != "$app_version" ] && jsonfilter -i "$RUN/update-release.json" -e '@.available' 2>/dev/null | grep -qx true; then echo 1; else echo 0; fi)"
-		json_add_string error "$(cat "$RUN/error" 2>/dev/null)"
+		service_error=$(cat "$RUN/error" 2>/dev/null)
+		[ -n "$service_error" ] || [ ! -f "$RUN/ready" ] || service_error=$(cat "$RUN/bootstrap-error" 2>/dev/null)
+		json_add_string error "$service_error"
 		json_add_boolean jobBusy "$([ -d /var/lock/obhod-job.lock ] && echo 1 || echo 0)"
 		native_dns=0
 		[ -z "$core_key" ] || { grep -qx dns-pool-v1 "$RUN/core-capabilities" 2>/dev/null && native_dns=1; } || true
@@ -162,11 +171,7 @@ case "$2" in
 		trap 'rm -f "$request" "$file"' EXIT
 		# Both a time limit and a file limit apply, including chunked responses.
 		{ (ulimit -c 0; ulimit -f 256
-			if command -v curl >/dev/null 2>&1; then
-				curl --fail --silent --location --proto '=http,https' --proto-redir '=http,https' --max-time 12 --max-filesize 131072 --user-agent 'v2rayN/Obhod' --output "$file" -- "$url"
-			else
-				uclient-fetch -q -T 12 -U 'v2rayN/Obhod' -O "$file" "$url"
-			fi
+			/usr/libexec/obhod/secure-fetch --max-time 12 --max-filesize 131072 --user-agent 'v2rayN/Obhod' --output "$file" -- "$url"
 		); fetch_result=$?; [ "$fetch_result" = 0 ]; } 2>/dev/null || {
 			reply 0 'Не удалось загрузить подписку: проверьте URL, размер и доступность сервера.'; exit 0;
 		}
@@ -243,7 +248,13 @@ case "$2" in
 		staged=$(mktemp /etc/obhod/settings.XXXXXX) || exit 1
 		cp "$candidate" "$staged" && mv "$staged" "$STATE" || { reply 0 'Не удалось сохранить настройки.'; exit 0; }
 		if [ "$requested_start" = true ] || [ "$was_running" = 1 ]; then
-			if ! "$CONTROL" start; then
+			"$CONTROL" start
+			start_result=$?
+			if [ "$start_result" = 3 ] && [ "$was_running" = 0 ]; then
+				reply 0 'Профиль сохранён. Bootstrap DoH недоступен. Служба остаётся включённой и ожидает восстановления DNS.'
+				exit 0
+			fi
+			if [ "$start_result" != 0 ]; then
 				if [ -n "$previous" ]; then mv "$previous" "$STATE"; else rm -f "$STATE"; fi
 				uci set "obhod.main.enabled=$old_enabled"; uci commit obhod
 				[ "$was_running" = 0 ] || "$CONTROL" start

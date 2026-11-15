@@ -1,25 +1,112 @@
 // SPDX-License-Identifier: Apache-2.0
 import { readfile, writefile } from 'fs';
+import { bootstrapPorts, savedBootstrap, dohTransport } from './bootstrap-doh.uc';
 let root = ARGV[2] || '/var/run/obhod';
 let settings = json(readfile(ARGV[1] || '/etc/obhod/settings.json'));
 if (type(settings?.profile?.routing) != 'object' || type(settings?.config?.route?.rules) != 'array' ||
     type(settings?.config?.dns?.servers) != 'array' || type(settings?.config?.inbounds) != 'array')
     die('Invalid saved configuration graph');
 let config = settings.config;
-// Saved profiles carry a generated graph too. Apply the failover DNS correction
-// in RAM so old profiles do not need a flash rewrite or a manual LuCI save.
-if (settings.profile.routing?.failoverEnabled && !settings.profile.routing?.dnsResolverEnabled) {
-    for (let dns in config.dns?.servers || []) if (dns.tag == 'proxy-dns' && dns.type == 'udp') {
-        dns.server = '8.8.8.8'; dns.type = 'tcp';
+
+function migrateExperimental115(graph) {
+    delete graph.dns.independent_cache;
+    for (let inbound in graph.inbounds || [])
+        if (inbound.type == 'tun') delete inbound.stack;
+    for (let set in graph.route.rule_set || []) {
+        if (set.type != 'remote') continue;
+        if (set.http_client && set.download_detour) die('Conflicting rule set HTTP options');
+        if (!set.http_client) {
+            let outbound = filter(graph.outbounds || [], o => o.tag == set.download_detour)[0];
+            if (set.download_detour && !(outbound?.type == 'direct' && length(keys(outbound)) == 2))
+                set.http_client = { detour: set.download_detour };
+            else
+                set.http_client = { domain_resolver: outbound?.domain_resolver ||
+                    graph.route.default_domain_resolver || graph.dns.final };
+        }
+        delete set.download_detour;
     }
 }
+
+let routing = settings.profile.routing;
+let bootstrap = { '1.1.1.1': 'cloudflare-dns.com', '1.0.0.1': 'cloudflare-dns.com',
+    '8.8.8.8': 'dns.google', '8.8.4.4': 'dns.google' };
+let defaults = keys(bootstrap);
+let migrated = { '9.9.9.9': ['dns.quad9.net', '/dns-query'], '9.9.9.10': ['dns10.quad9.net', '/dns-query'],
+    '94.140.14.14': ['dns.adguard-dns.com', '/dns-query'], '76.76.2.0': ['freedns.controld.com', '/p0'],
+    '76.76.2.2': ['freedns.controld.com', '/p2'], 'dns.google': ['dns.google', '/dns-query'] };
+let bootstrapServers = savedBootstrap(settings);
+function pinned(tag, ip, detour) {
+    return dohTransport(tag, { host: bootstrap[ip], ip, path: '/dns-query', port: 443 }, detour);
+}
+let resolver = { server: 'bootstrap-dns', strategy: 'ipv4_only' };
+// Migrate the saved DNS graph in RAM before checking or starting either core.
+config.dns.servers = filter(config.dns.servers, s => s.tag != 'bootstrap-dns' && index(s.tag || '', 'dns-upstream-bootstrap-') != 0);
+let ports = { 'direct-dns': 1153, 'proxy-dns': 1154, 'filtered-fake-dns': 1156 };
+config.dns.servers = map(config.dns.servers, s => {
+    if (s.type == 'fakeip') return s;
+    if (s.type == 'udp' && s.server == '127.0.0.1' && ports[s.tag] == s.server_port &&
+        s.server_port && !s.detour) return s;
+    if (s.type == 'udp' || s.type == 'tcp') {
+        let proxy = s.tag == 'proxy-dns' || index(s.tag, 'dns-upstream-proxy-') == 0;
+        if (!proxy && s.tag != 'direct-dns' && index(s.tag, 'dns-upstream-direct-') != 0) die('Unexpected plaintext DNS transport');
+        let replacement = migrated[s.server];
+        if (replacement && routing.dnsResolverEnabled) return { tag: s.tag, type: 'https', server: replacement[0],
+            path: replacement[1], tls: { enabled: true, server_name: replacement[0] }, domain_resolver: resolver,
+            ...(s.detour ? { detour: s.detour } : {}) };
+        if (!routing.dnsResolverEnabled) return pinned(s.tag, proxy ? '8.8.8.8' : '1.1.1.1', s.detour);
+        let ip = index(defaults, s.server) >= 0 ? s.server : (proxy ? '8.8.8.8' : '1.1.1.1');
+        return pinned(s.tag, ip, s.detour);
+    }
+    if (s.type != 'https' && s.type != 'tls') die('Unexpected DNS transport');
+    if (s.tls?.insecure || s.tls?.disable_sni || s.server_port == 53) die('Invalid encrypted DNS transport');
+    if (s.type == 'https' && index(defaults, s.server) >= 0 &&
+        (!s.server_port || s.server_port == 443) && (!s.path || s.path == '/dns-query')) return pinned(s.tag, s.server, s.detour);
+    s.tls ||= {};
+    s.tls.enabled = true;
+    if (!match(s.server || '', /^[0-9]+(\.[0-9]+){3}$/) && index(s.server || '', ':') < 0)
+        s.domain_resolver = resolver;
+    else delete s.domain_resolver;
+    return s;
+});
+push(config.dns.servers, { tag: 'bootstrap-dns', type: 'tcp', server: '127.0.0.1', server_port: 1155 });
+config.dns.independent_cache = true;
+config.dns.final = 'direct-dns';
+config.route.default_domain_resolver = { server: 'direct-dns', strategy: settings.options?.ipv6 ? 'prefer_ipv4' : 'ipv4_only' };
+for (let item in [...config.outbounds, ...(config.endpoints || [])]) {
+    if (item.tag == 'direct') item.domain_resolver = config.route.default_domain_resolver;
+    else if (item.server || item.peers || item.tag == 'dns-infrastructure') {
+        item.domain_resolver = { ...resolver, strategy: item.domain_resolver?.strategy || 'ipv4_only' };
+    }
+}
+if (!length(filter(config.outbounds, o => o.tag == 'dns-infrastructure')))
+    push(config.outbounds, { tag: 'dns-infrastructure', type: 'direct', domain_resolver: resolver });
+for (let set in config.route.rule_set || [])
+    if (set.type == 'remote' && !settings.options?.downloadListsViaProxy) set.download_detour = 'dns-infrastructure';
+
+// The portable bootstrap leaves must listen before the main core starts.
+let sidecar = { log: { level: 'warn' }, dns: { servers: [], rules: [], independent_cache: true },
+    inbounds: [], outbounds: [{ type: 'direct', tag: 'direct' }], route: { rules: [] } };
+let tun = filter(config.inbounds, i => i.type == 'tun')[0];
+for (let i, endpoint in bootstrapServers) {
+    let tag = 'bootstrap-doh-' + i, inbound = 'bootstrap-in-' + i;
+    let server = dohTransport(tag, endpoint);
+    server.routing_mark = tun?.auto_redirect_output_mark || 0x2024;
+    push(sidecar.dns.servers, server);
+    push(sidecar.inbounds, { type: 'direct', tag: inbound, listen: '127.0.0.1', listen_port: bootstrapPorts[i] });
+    push(sidecar.dns.rules, { inbound: [inbound], action: 'route', server: tag, disable_cache: true });
+    push(sidecar.route.rules, { inbound: [inbound], action: 'hijack-dns' });
+}
+sidecar.dns.final = sidecar.dns.servers[0].tag;
+sidecar.route.default_domain_resolver = { server: sidecar.dns.final, strategy: 'ipv4_only' };
+if (ARGV[0] == 'experimental-1.15') migrateExperimental115(sidecar);
+if (!writefile(root + '/bootstrap.json', sprintf('%J\n', sidecar))) die('Cannot write bootstrap DoH configuration');
 let secret = trim(readfile(root + '/controller-secret') || '');
 if (!match(secret, /^[a-f0-9-]{32,36}$/)) die('Missing controller secret');
 config.experimental ||= {};
 // Upgrade the runtime copy of old profiles without rewriting tunnels or rules.
 // New profiles already contain FakeIP rules from the shared browser generator.
 if (config.dns && !length(filter(config.dns.servers, s => s.type == 'fakeip'))) {
-    let routing = settings.profile.routing, ipv6 = settings.options?.ipv6 == true;
+    let ipv6 = settings.options?.ipv6 == true;
     let selected = [];
     for (let rule in config.dns.rules || []) if (rule.server == 'proxy-dns') {
         let copy = { ...rule };
@@ -28,7 +115,7 @@ if (config.dns && !length(filter(config.dns.servers, s => s.type == 'fakeip'))) 
     }
     let proxy = filter(config.dns.servers, s => s.tag == 'proxy-dns')[0];
     let direct = routing.dnsResolverEnabled ? { ...proxy, tag: 'direct-dns' }
-        : { type: 'udp', tag: 'direct-dns', server: '1.1.1.1' };
+        : pinned('direct-dns', '1.1.1.1');
     delete direct.detour;
     config.dns.servers = [direct, ...filter(config.dns.servers, s => s.tag != 'direct-dns')];
     let fake = { type: 'fakeip', tag: 'fake-dns', inet4_range: '198.18.0.0/15' };
@@ -95,21 +182,5 @@ config.route.rules = filter(config.route.rules, r => {
     if (index(terminalIPs, key) >= 0) return false;
     push(terminalIPs, key); return true;
 });
-if (ARGV[0] == 'experimental-1.15') {
-    delete config.dns.independent_cache; // 1.15 always keys the cache by transport.
-    for (let inbound in config.inbounds) if (inbound.type == 'tun') delete inbound.stack;
-    for (let set in config.route.rule_set || []) {
-        if (set.type != 'remote') continue;
-        if (set.http_client && set.download_detour) die('Rule set has both http_client and download_detour');
-        if (!set.http_client) {
-            let outbound = filter(config.outbounds, o => o.tag == set.download_detour)[0];
-            if (set.download_detour && !(outbound?.type == 'direct' && length(keys(outbound)) == 2))
-                set.http_client = { detour: set.download_detour };
-            else
-                set.http_client = { domain_resolver: outbound?.domain_resolver ||
-                    config.route.default_domain_resolver || config.dns.final };
-        }
-        delete set.download_detour;
-    }
-}
-if (!writefile(root + '/config.json', sprintf('%J\n', config))) die('Cannot write runtime configuration');
+if (ARGV[0] == 'experimental-1.15') migrateExperimental115(config);
+if (!writefile(root + '/config.json', sprintf('%J\n', config))) die('Cannot write runtime DNS configuration');

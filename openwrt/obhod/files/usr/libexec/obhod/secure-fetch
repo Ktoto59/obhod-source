@@ -1,0 +1,20 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# curl resolves the requested URL and every redirect through the pinned DoH URL.
+command -v curl >/dev/null 2>&1 || {
+	printf '%s\n' 'Для загрузки через Bootstrap DoH требуется пакет curl.' >&2
+	exit 1
+}
+plans=$(ucode /usr/libexec/obhod/bootstrap-list.uc /etc/obhod/settings.json 2>/dev/null) || {
+	printf '%s\n' 'Некорректный список Bootstrap DoH.' >&2
+	exit 1
+}
+while IFS=' ' read -r resolve url; do
+	curl -q --noproxy '*' --fail --silent --show-error --location --max-redirs 10 \
+		--proto '=http,https' --proto-redir '=http,https' --connect-timeout 4 \
+		--doh-url "$url" --resolve "$resolve" "$@" && exit 0
+done <<EOF_PLANS
+$plans
+EOF_PLANS
+printf '%s\n' 'Загрузка через Bootstrap DoH не удалась.' >&2
+exit 1

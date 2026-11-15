@@ -83,7 +83,7 @@ app.whenReady().then(async () => {
       }
       const view = { extend: value => value };
       let staged=[], uploadChunks=0, handlerWork, logRequests=0;
-      let routeStaleMinutes = '';
+      let routeStaleMinutes = '', dnsCheckRequest;
       const measuredAt = Math.floor(Date.now()/1000) - 120;
       const rpc = { declare: spec => async (...args) => {
         if (spec.object === 'obhod') assert(spec.nobatch === true, 'Obhod RPC calls must not share a batch');
@@ -93,6 +93,7 @@ app.whenReady().then(async () => {
           if(args[0]==='chunk') {assert(args[3]===staged.length,'Sequential chunks');staged.push(atob(args[2]));uploadChunks++;return {ok:true};}
           return {ok:true};
         }
+        if (spec.method === 'dnsCheck') { dnsCheckRequest=JSON.parse(args[0]); return {ok:true,results:[{kind:'bootstrap',number:1,ok:true,ms:23},{kind:'upstream',number:1,ok:false}]}; }
         if (spec.method === 'routeStaleAge') { routeStaleMinutes = args[0]; return {ok:true}; }
         if (spec.method === 'status') {
           if (failStatus) throw new Error('No related RPC reply');
@@ -384,7 +385,11 @@ app.whenReady().then(async () => {
       page.presetInputs.discord.checked=true; page.presetInputs.telegram.checked=true; page.presetInputs.google_ai.checked=true; page.updatePresets();
       page.dnsEnabled.checked=true;page.dnsPoolMode.value='parallel';
       page.dnsUpstreams.value='https://1.1.1.1/dns-query\\nhttps://1.0.0.1/dns-query';
-      page.dnsBootstrapServers.value='1.1.1.1\\n8.8.8.8';page.updateDnsFields();page.markDirty();
+      page.dnsBootstrapServers.value='76.76.2.2\\nhttps://dns.quad9.net/dns-query @ 9.9.9.9';page.updateDnsFields();page.markDirty();
+      const savesBeforeDnsCheck=saves;
+      page.dnsCheckButton.click(); await handlerWork;
+      assert(dnsCheckRequest.bootstrap[0]==='76.76.2.2' && dnsCheckRequest.bootstrap[1].includes(' @ 9.9.9.9'),'DNS test uses editable bootstrap endpoints from the draft');
+      assert(page.dnsCheckResult.textContent.includes('23 мс') && page.dnsCheckResult.textContent.includes('нет ответа') && saves===savesBeforeDnsCheck,'Diagnostic results are per server and do not save settings');
       dnsPoolReady=false;page.updateStatus(await rpc.declare({method:'status'})());
       assert(!page.dnsPoolFields.hidden && page.dnsSingleFields.hidden,'DNS group editor replaces single-server fields');
       var beforePoolSaves=saves;
@@ -394,6 +399,7 @@ app.whenReady().then(async () => {
       assert(serviceRequests.at(-1)==='dns-prepare' && !running,'DNS preparation uses the asynchronous service operation without starting a tunnel');
       await page.save(false);
       assert(saves===beforePoolSaves+1 && applied.options.dnsPoolMode==='parallel','DNS group mode and servers saved');
+      assert(applied.options.bootstrapDoH.join('|')===dnsCheckRequest.bootstrap.join('|'),'The tested draft bootstrap list is saved in order');
       assert(applied.options.dnsUpstreams.length===2 && applied.config.dns.servers.find(s=>s.tag==='proxy-dns').server_port===1154,'DNS group has the proxy gateway');
       assert(page.dnsPrepareButton.hidden,'Prepared DNS component no longer offers installation');
       page.updateStatus({...page.lastStatus,dnsPoolNative:true,dnsPoolReady:true});

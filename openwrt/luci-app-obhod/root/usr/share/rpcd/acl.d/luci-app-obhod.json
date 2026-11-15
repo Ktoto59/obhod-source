@@ -6,7 +6,7 @@
       "file": { "/etc/obhod/settings.json": [ "read" ], "/etc/obhod/defaults.json": [ "read" ] }
     },
     "write": {
-      "ubus": { "obhod": [ "apply", "upload", "start", "stop", "subscription", "installCore", "removeCore", "update", "service", "diagnose", "clearLogs", "routeStaleAge" ] }
+      "ubus": { "obhod": [ "apply", "upload", "start", "stop", "subscription", "installCore", "removeCore", "update", "service", "diagnose", "clearLogs", "routeStaleAge", "dnsCheck" ] }
     }
   }
 }

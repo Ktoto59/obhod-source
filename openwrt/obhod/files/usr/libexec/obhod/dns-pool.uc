@@ -1,33 +1,31 @@
 // SPDX-License-Identifier: Apache-2.0
 // Bounded, loopback-only DNS pools. Encryption and egress stay in sing-box.
 import * as socket from 'socket';
-import { readfile } from 'fs';
+import { readfile, writefile, unlink } from 'fs';
+import { bootstrapPorts } from './bootstrap-doh.uc';
 
 let config = json(readfile(ARGV[0]) || '{}');
 let filtering = config.mode == 'filtered-fakeip';
+let bootstrap = config.port == 1155;
 if (!match(config.mode || '', /^(fallback|parallel|balanced|filtered-fakeip)$/) ||
     type(config.port) != 'int' || index(filtering ? [1156] : [1153, 1154, 1155], config.port) < 0 || type(config.servers) != 'array' ||
-    length(config.servers) < 2 || length(config.servers) > 4) die('Invalid DNS pool configuration');
-let firstPort = config.port == 1153 ? 12053 : config.port == 1154 ? 12057 : 12061;
-let bootstrap = config.port == 1155;
+    length(config.servers) < (bootstrap ? 1 : 2) || length(config.servers) > (bootstrap ? length(bootstrapPorts) : 4) ||
+    (bootstrap && config.mode != 'fallback')) die('Invalid DNS pool configuration');
+let firstPort = config.port == 1153 ? 12053 : 12057;
 if (filtering) {
     if (length(config.servers) != 2 || type(config.servers[0]) != 'int' || type(config.servers[1]) != 'int' || config.servers[0] != 12065 || config.servers[1] != 12066) die('Invalid filtered FakeIP listeners');
 }
-else if (!bootstrap && length(filter(config.servers, p => type(p) != 'int' || p < firstPort || p > firstPort + 3))) die('DNS pool cannot cross routing groups');
-if (bootstrap) {
-    if (type(config.mark) != 'int' || config.mark < 1 || config.mark > 2147483647) die('Invalid DNS bypass mark');
-    for (let server in config.servers) {
-        if (type(server.port) != 'int' || server.port < 1 || server.port > 65535 ||
-            !((match(server.address || '', /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/)) || match(server.address || '', /^[0-9a-fA-F]*:[0-9a-fA-F:]+$/))) die('Bootstrap accepts only IP addresses');
-        if (!length(socket.addrinfo(server.address, null, { flags: socket.AI_NUMERICHOST, socktype: socket.SOCK_DGRAM }))) die('Invalid bootstrap IP');
-        if (index([1153,1154,1155],server.port)>=0 || (server.port>=12053&&server.port<=12064) || (server.port==53 && (match(server.address,/^127\./)||server.address=='::1'))) die('Bootstrap cannot point back to the DNS pool');
-    }
-}
+else if (length(filter(config.servers, p => type(p) != 'int' ||
+    (bootstrap ? index(bootstrapPorts, p) < 0 : p < firstPort || p > firstPort + 3))))
+    die('DNS pool cannot cross routing groups');
 if (ARGV[1] == '--check') exit(0);
 
-const LIMIT = 64, TIMEOUT = 4000, NEGATIVE_WAIT = 200;
+const LIMIT = 64, NEGATIVE_WAIT = 200;
+const TIMEOUT = bootstrap ? max(4000, 1000 * length(config.servers)) : 4000;
 let pending = {}, clients = {}, streams = [], sources = [];
-let sequence = 0, counter = 0, clientSequence = 0;
+let sequence = 0, counter = 0, clientSequence = 0, lastBootstrapError = null;
+const BOOTSTRAP_ERROR = '/var/run/obhod/bootstrap-error';
+if (bootstrap) unlink(BOOTSTRAP_ERROR);
 function now() { let c = clock(true); return c[0] * 1000.0 + c[1] / 1000000.0; }
 function word(s, offset) { return ord(s, offset) * 256 + ord(s, offset + 1); }
 function bytes(n) { return sprintf('%c%c', (n >> 8) & 255, n & 255); }
@@ -138,15 +136,8 @@ function listener(kind) {
     return fd;
 }
 let udp = listener(socket.SOCK_DGRAM), tcp = listener(socket.SOCK_STREAM);
-function sourceSocket(source, kind) {
-    let family = index(source.address, ':') >= 0 ? socket.AF_INET6 : socket.AF_INET;
-    let fd = socket.create(family, kind | socket.SOCK_NONBLOCK);
-    if (fd && bootstrap && !fd.setopt(socket.SOL_SOCKET, socket.SO_MARK, config.mark)) { fd.close(); return null; }
-    return fd;
-}
 for (let server in config.servers) {
-    let source = { address: bootstrap ? server.address : '127.0.0.1', port: bootstrap ? server.port : server, score: 250, failures: 0 };
-    push(sources, source);
+    push(sources, { address: '127.0.0.1', port: server, score: 250, failures: 0 });
 }
 function closeStream(stream) { if (!stream.closed) { stream.closed = true; stream.fd.close(); } }
 // ucode binds functions in declaration order. closeClient and finish call each
@@ -181,14 +172,14 @@ function attempt(q, index) {
     if (!q.client) {
         // Dedicated connected sockets isolate clients even after the 16-bit ID
         // wraps. Closing a race also discards late replies from its losers.
-        let fd = sourceSocket(source, socket.SOCK_DGRAM);
+        let fd = socket.create(socket.AF_INET, socket.SOCK_DGRAM | socket.SOCK_NONBLOCK);
         if (!fd || !fd.connect({ address: source.address, port: source.port }) || fd.send(packet) != length(packet)) {
             if (fd) fd.close(); q.failed[index] = true; return;
         }
         push(streams, { fd, query: q, source: index, datagram: true, closed: false });
         return;
     }
-    let fd = sourceSocket(source, socket.SOCK_STREAM);
+    let fd = socket.create(socket.AF_INET, socket.SOCK_STREAM | socket.SOCK_NONBLOCK);
     if (!fd) { q.failed[index] = true; return; }
     let connected = fd.connect({ address: source.address, port: source.port });
     if (!connected && fd.error(true) != 115) { fd.close(); q.failed[index] = true; return; }
@@ -238,6 +229,20 @@ function answer(index, packet, expected) {
         if (index == 1 || !permitsFakeIp(q, packet, parsed)) { finish(q, packet); return; }
         q.realSucceeded = true; q.failed[0] = true;
         attempt(q, 1);
+        return;
+    }
+    if (bootstrap) {
+        let code = ord(packet, 3) & 15;
+        let kind = word(q.packet, q.parsed.end - 4);
+        if (code == 3 || (!code && !(ord(packet, 2) & 2) &&
+            (!word(packet, 6) || (kind != 1 && kind != 28) || permitsFakeIp(q, packet, parsed)))) {
+            if (lastBootstrapError != null) {
+                unlink(BOOTSTRAP_ERROR);
+                lastBootstrapError = null;
+            }
+            finish(q, packet);
+        }
+        else q.failed[index] = true;
         return;
     }
     // A DNS result is authoritative for this exchange, including a filtering
@@ -345,7 +350,13 @@ while (true) {
     for (let id in keys(pending)) {
         let q = pending[id];
         if (!q) continue;
-        if (stamp >= q.deadline || (q.negativeUntil && stamp >= q.negativeUntil) || length(q.failed) == length(sources) || (filtering && q.failed[0] && !q.realSucceeded)) finish(q, q.fallback || failure(q.packet, q.parsed));
+        if (stamp >= q.deadline || (q.negativeUntil && stamp >= q.negativeUntil) || length(q.failed) == length(sources) || (filtering && q.failed[0] && !q.realSucceeded)) {
+            if (bootstrap && (!lastBootstrapError || stamp - lastBootstrapError >= 30000)) {
+                lastBootstrapError = stamp;
+                writefile(BOOTSTRAP_ERROR, 'Bootstrap DoH: все серверы недоступны или вернули непригодный адрес.\n');
+            }
+            finish(q, q.fallback || failure(q.packet, q.parsed));
+        }
         else if (config.mode == 'fallback' && (q.failed[q.current] || stamp >= q.attemptDeadline)) {
             q.failed[q.current] = true;
             for (let stream in streams) if (stream.query == q && stream.source == q.current) closeStream(stream);
