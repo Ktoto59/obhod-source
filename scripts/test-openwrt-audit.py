@@ -346,17 +346,17 @@ case "$url" in */delay\?*) echo '{"delay":42}' > "$output";; *) cp /tmp/proxies 
             r = self.run_in('/usr/libexec/obhod/monitor', 'once')
             self.assertEqual(r.returncode, 0, r.stderr)
         self.assertNotIn('/delay?', (self.lab/'tmp/http-calls').read_text())
-        telemetry = json.loads((self.lab/'var/run/obhod/telemetry.json').read_text())
+        telemetry = json.loads((self.lab/'var/run/obhod/telemetry.json').read_text())['route']
         self.assertEqual(telemetry['delay'], 83)
-        self.assertTrue(telemetry['ok'])
         self.assertEqual(telemetry['name'], 'B')
         self.assertEqual(self.run_in('/usr/libexec/obhod/monitor', 'diagnose').returncode, 0)
         self.assertEqual((self.lab/'tmp/http-calls').read_text().count('/delay?'), 1)
         self.write('tmp/proxies', json.dumps({'proxies': {'proxy': {'now':'tunnel-b'}, 'tunnel-b': {'history':[]}}}))
         self.run_in('/usr/libexec/obhod/monitor', 'once')
-        telemetry = json.loads((self.lab/'var/run/obhod/telemetry.json').read_text())
-        self.assertIsNone(telemetry['delay'])
-        self.assertTrue(telemetry['ok'], 'No latency sample is not a failed connection')
+        telemetry = json.loads((self.lab/'var/run/obhod/telemetry.json').read_text())['route']
+        self.assertEqual(telemetry['delay'], 42)
+        self.assertIsNone(telemetry['failedAt'])
+        self.assertTrue(telemetry['historyUnavailable'])
         # Fixed mode has no built-in urltest. Preserve the previous single
         # periodic probe rather than silently losing failure detection there.
         self.write('etc/obhod/settings.json', json.dumps({'profile': {'routing': {'activeTunnelId':'b', 'failoverEnabled':False}, 'tunnels':[{'id':'b','name':'B'}]}}))

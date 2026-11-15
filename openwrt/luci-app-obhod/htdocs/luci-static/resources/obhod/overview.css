@@ -373,3 +373,6 @@ to { opacity:1;transform:none }
 .obhod-app .ob-update-summary-main { flex-basis: calc(100% - 40px); }
 .obhod-app .ob-update-details > summary { flex-wrap: wrap; }
 }
+
+.obhod-app .ob-route-notes { display:grid;gap:3px }
+.obhod-app .ob-route-notes > :empty { display:none }

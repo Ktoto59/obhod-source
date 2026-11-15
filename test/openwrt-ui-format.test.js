@@ -53,6 +53,6 @@ test('LuCI route and diagnostic times use the same configured router zone', () =
   const epoch = Date.parse('2026-11-04T08:11:14Z') / 1000;
   assert.equal(page.formatSystemTime(epoch, false), '13:11:14');
   assert.match(page.formatSystemTime(epoch, true), /04\.11\.(?:20)?26.*13:11:14/);
-  const title = page.routeTelemetry({ routeKnown: true, routeCheckedAt: epoch, routeReceivedAt: epoch }, epoch).title;
-  assert.match(title, /Замер: 13:11:14 Получено: 13:11:14/);
+  const sample = page.routeTelemetry({ routeDelay: '72', routeCheckedAt: epoch, routeMaxAge: 90 }, epoch + 2);
+  assert.match(sample.label, /^72 мс · 13:11:14/);
 });

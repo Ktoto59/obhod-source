@@ -80,7 +80,7 @@ if [ -f "$RUN/ready" ]; then
         (sleep 5; kill "$child" 2>/dev/null) & timer=$!
         if wait "$child" && grep -Eq '198\.(18|19)\.[0-9]+\.[0-9]+' "$work/fakeip"; then touch "$work/fakeip-ok"; fi
         kill "$timer" 2>/dev/null || true; wait "$timer" 2>/dev/null || true
-    /usr/libexec/obhod/monitor diagnose || true
+    /usr/libexec/obhod/monitor diagnose "$work/route" || true
 fi
 ucode /usr/libexec/obhod/diagnostics.uc "$work" > "$work/result"
 mv "$work/result" "$RUN/diagnostics.json"

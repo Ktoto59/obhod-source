@@ -8,6 +8,7 @@
 'require obhod.core as core';
 
 var status = rpc.declare({ object: 'obhod', method: 'status', nobatch: true });
+var routeStaleAge = rpc.declare({ object: 'obhod', method: 'routeStaleAge', params: ['minutes'], nobatch: true });
 var apply = rpc.declare({ object: 'obhod', method: 'apply', params: ['settings', 'start', 'upload'], nobatch: true });
 var upload = rpc.declare({ object: 'obhod', method: 'upload', params: ['action', 'upload', 'data', 'index'], nobatch: true });
 var stop = rpc.declare({ object: 'obhod', method: 'stop', nobatch: true });
@@ -235,6 +236,12 @@ return view.extend({
     this.routeSummary = E('p', { 'class': 'ob-route-name' });
     this.routeMode=E('span',{'class':'ob-counter ob-badge-green'});
     this.routeChecked=E('span',{'class':'ob-help'});
+    this.routeStale=E('span',{'class':'ob-help'});
+    this.routeFailure=E('span',{'class':'ob-help'});
+    this.staleMinutes = E('input',{type:'number',min:1,max:1440,step:1,placeholder:'Авто',value:data[0].routeStaleMinutes || ''});
+    this.staleAgeMessage = E('span',{'class':'ob-help','aria-live':'polite'});
+    this.staleAgeSave = E('button',{type:'button','class':'cbi-button ob-button ob-button-sm',
+      click:ui.createHandlerFn(this,function(){return self.saveRouteStaleAge();})},'Сохранить порог');
     this.installedCore=E('span');this.installedFlavor=E('span');this.installedState=E('span');
     this.coreBadge=E('span',{'class':'ob-counter'});
     this.downloadSize=E('span');this.installedSize=E('span');
@@ -274,7 +281,8 @@ return view.extend({
       card('Активный маршрут','',[
         E('div',{'class':'ob-route-line'},[E('span',{'class':'ob-route-icon'},routeIcon()),
           E('div',{'class':'ob-route-info'},[this.overviewLiveRoute,this.routeSummary]),this.overviewLiveDelay]),
-        E('div',{'class':'ob-inline-footer'},[this.routeChecked,jump('connections','Подключения')])],this.routeMode),
+        E('div',{'class':'ob-inline-footer'},[E('div',{'class':'ob-route-notes'},
+          [this.routeChecked,this.routeStale,this.routeFailure]),jump('connections','Подключения')])],this.routeMode),
       card('Состояние системы','',[this.healthRows,
         E('div',{'class':'ob-inline-footer'},[this.healthNote,jump('diagnostics','Диагностика')])],this.healthBadge)]));
     var stats = E('div', { 'class': 'ob-stats' });
@@ -305,7 +313,9 @@ return view.extend({
     var connectionGrid = E('div', { 'class': 'ob-connections-grid' });
     connectionGrid.appendChild(card('Выбор маршрута', '', [field('Основное подключение', this.active),
       switchField('Автоматический выбор', this.group, 'Все выбранные туннели используют общие правила. Обход переключится на рабочее соединение.'), this.autoFields,
-      field('URL проверки соединений',this.testUrl,'Обычно адрес с ответом HTTP 204. Не все сайты доступны с каждого VPN-адреса.') ]));
+      field('URL проверки соединений',this.testUrl,'Обычно адрес с ответом HTTP 204. Не все сайты доступны с каждого VPN-адреса.'),
+      field('Считать замер устаревшим через (мин)',this.staleMinutes,'1–1440 минут. Оставьте поле пустым для интервала автовыбора или 90 секунд при отдельной проверке.'),
+      E('div',{'class':'ob-inline-actions'},[this.staleAgeSave,this.staleAgeMessage]) ]));
     connectionGrid.appendChild(card('Подключения', 'Для автоматического выбора отметьте минимум два подключения.', [
       E('div', { 'class': 'ob-list-toolbar' }, [E('div',{'class':'ob-inline-actions'},[this.serverFilterAll,this.serverFilterSelected]),E('label', { 'class': 'ob-check-label' }, [this.all, E('span', {}, 'Выбрать все')])]),
       E('div',{'class':'ob-search'},this.serverSearch), this.list, this.serverEmpty,
@@ -374,7 +384,7 @@ return view.extend({
         E('div', { 'class': 'ob-header-status' }, [this.routeDetail,this.state,this.restartButton,this.serviceButton])]),
       E('div',{'class':'ob-page-top'},[E('div',{},[E('p',{'class':'ob-eyebrow'},['Обход / ',this.breadcrumb]),this.pageTitle,this.pageIntro]),this.statusDetail]),
       this.operationNotice,nav, panels, this.footer,E('p',{'class':'ob-footer-note'},'Обход · выборочная маршрутизация для OpenWrt') ]);
-    function changed(event) { if (![self.serverSearch,self.domainSearch,self.domainEntry,self.domainPageSelect].includes(event.target) && !self.panels.protocols.contains(event.target)) self.markDirty(); }
+    function changed(event) { if (![self.serverSearch,self.domainSearch,self.domainEntry,self.domainPageSelect,self.staleMinutes].includes(event.target) && !self.panels.protocols.contains(event.target)) self.markDirty(); }
     this.root.addEventListener('input',changed);this.root.addEventListener('change',changed);
     this.renderTunnels();
     this.updatePresets(); this.updateCoreVersions(); this.updateProtocolHelp(); this.updateDnsFields(); this.selectTab('overview');
@@ -402,6 +412,8 @@ return view.extend({
     this.overviewLiveDelay.textContent = this.liveDelay.textContent;
     this.routeDetail.title = telemetry.title;
     this.routeChecked.textContent=value.running?telemetry.title:'Маршрут неактивен';
+    this.routeStale.textContent=value.running && telemetry.stale?'Замер устарел':'';
+    this.routeFailure.textContent=value.running?telemetry.failure:'';
     this.coreState.textContent = (value.coreFlavor || (value.version ? 'Своё ядро sing-box' : 'Ядро не установлено')) + (value.version?' · '+value.version.replace(/^sing-box version /,''):'')
       + (value.coreMessage ? ' · ' + value.coreMessage : '');
     this.installedCore.textContent=value.version || 'Не установлено';
@@ -427,16 +439,37 @@ return view.extend({
   },
 
   routeTelemetry: function(value, now) {
-    var measured = Number(value.routeCheckedAt), received = Number(value.routeReceivedAt);
-    var age = now - measured, readAge = now - received;
-    var known = value.routeKnown === true && measured > 0;
-    var fresh = known && age >= -5 && age <= Number(value.routeMaxAge) && received > 0 && readAge >= -5 && readAge < 90;
-    var label = !known ? 'нет замера' : !fresh ? 'замер устарел' : value.routeOk ? (value.routeDelay !== '' ? value.routeDelay + ' мс' : 'нет замера') : 'нет ответа';
-    var title = known ? 'Замер: ' + this.formatSystemTime(measured,false) : 'Ожидаем замер ядра.';
-    if (received > 0) title += ' Получено: ' + this.formatSystemTime(received,false) + '.';
-    if (Number(value.routeDiagnosedAt) > 0) title += ' Явная диагностика.';
-    if (!fresh) title += ' Активная HTTPS-проверка доступна в диагностике.';
-    return { label: label, title: title };
+    var measured = Number(value.routeCheckedAt), delay = Number(value.routeDelay);
+    var known = measured > 0 && delay > 0;
+    var label = 'Успешных замеров нет';
+    var age = Math.floor(now - measured), limit = Number(value.routeStaleMinutes) * 60 || Number(value.routeMaxAge);
+    if (known) {
+      var seconds = Math.max(0, age), unit = seconds >= 3600 ? 'hour' : seconds >= 60 ? 'minute' : 'second';
+      var amount = Math.floor(seconds / (unit === 'hour' ? 3600 : unit === 'minute' ? 60 : 1));
+      var relative = new Intl.RelativeTimeFormat('ru-RU', {style:'short'}).format(-amount, unit);
+      label = delay + ' мс · ' + this.formatSystemTime(measured,false) + ' · ' + relative;
+    }
+    var failure = Number(value.routeFailedAt) > 0 ? 'Последняя HTTPS-проверка не удалась'
+      : value.routeHistoryUnavailable ? 'У ядра нет нового результата проверки' : '';
+    return { label:label, title:'Задержка по HTTPS', stale:known && (age < -5 || age > limit), failure:failure };
+  },
+
+  saveRouteStaleAge: function() {
+    var self = this;
+    var minutes = this.staleMinutes.value;
+    if (!this.staleMinutes.validity.valid) {
+      this.staleMinutes.reportValidity();
+      return Promise.resolve();
+    }
+    this.staleAgeSave.disabled = true;
+    this.staleAgeMessage.textContent = '';
+    return routeStaleAge(minutes).then(function(result) {
+      if (!result.ok) throw new Error(result.error || 'Не удалось сохранить порог замера.');
+      self.staleAgeMessage.textContent = 'Порог сохранён';
+      return status().then(function(value) { self.updateStatus(value); });
+    }).catch(function(error) {
+      self.staleAgeMessage.textContent = error.message;
+    }).finally(function() { self.staleAgeSave.disabled = false; });
   },
 
   updateControls: function() {

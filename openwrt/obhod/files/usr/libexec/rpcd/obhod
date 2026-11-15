@@ -5,6 +5,7 @@ umask 077
 STATE=/etc/obhod/settings.json
 RUN=/var/run/obhod
 CONTROL=/usr/libexec/obhod/control
+STALE_AGE=/etc/obhod/route-stale-minutes
 
 reply() {
 	json_init
@@ -16,7 +17,7 @@ reply() {
 operation() { ucode /usr/libexec/obhod/operation.uc "$@"; }
 
 [ "$1" = list ] && {
-	printf '%s\n' '{"status":{},"upload":{"action":"string","upload":"string","data":"string","index":0},"apply":{"settings":"string","start":true,"upload":"string"},"start":{},"stop":{},"subscription":{"url":"string"},"installCore":{"profile":"string","version":"string"},"removeCore":{},"coreVersions":{},"coreSizes":{},"update":{"action":"string"},"interfaces":{},"logs":{},"clearLogs":{},"diagnostics":{},"service":{"action":"string"},"diagnose":{}}'
+	printf '%s\n' '{"status":{},"upload":{"action":"string","upload":"string","data":"string","index":0},"routeStaleAge":{"minutes":"string"},"apply":{"settings":"string","start":true,"upload":"string"},"start":{},"stop":{},"subscription":{"url":"string"},"installCore":{"profile":"string","version":"string"},"removeCore":{},"coreVersions":{},"coreSizes":{},"update":{"action":"string"},"interfaces":{},"logs":{},"clearLogs":{},"diagnostics":{},"service":{"action":"string"},"diagnose":{}}'
 	exit 0
 }
 [ "$1" = call ] || exit 1
@@ -79,14 +80,21 @@ case "$2" in
 		json_add_string jobState "$(cat "$RUN/job-state" 2>/dev/null)"
 		json_add_string jobAction "$(cat "$RUN/job-action" 2>/dev/null)"
 		json_add_string jobMessage "$(cat "$RUN/job-message" 2>/dev/null)"
-		json_add_string routeName "$(jsonfilter -i "$RUN/telemetry.json" -e '@.name' 2>/dev/null)"
-		json_add_string routeDelay "$(jsonfilter -i "$RUN/telemetry.json" -e '@.delay' 2>/dev/null)"
-		json_add_string routeCheckedAt "$(jsonfilter -i "$RUN/telemetry.json" -e '@.checkedAt' 2>/dev/null)"
-		json_add_string routeReceivedAt "$(jsonfilter -i "$RUN/telemetry.json" -e '@.receivedAt' 2>/dev/null)"
-		json_add_string routeDiagnosedAt "$(jsonfilter -i "$RUN/telemetry.json" -e '@.diagnosedAt' 2>/dev/null)"
-		json_add_string routeMaxAge "$(jsonfilter -i "$RUN/telemetry.json" -e '@.maxAge' 2>/dev/null)"
-		json_add_boolean routeKnown "$(jsonfilter -i "$RUN/telemetry.json" -e '@.known' 2>/dev/null | grep -qx true && echo 1 || echo 0)"
-		json_add_boolean routeOk "$(jsonfilter -i "$RUN/telemetry.json" -e '@.ok' 2>/dev/null | grep -qx true && echo 1 || echo 0)"
+		# Extract one snapshot so a server switch cannot mix its name and sample.
+		route=$(jsonfilter -i "$RUN/telemetry.json" -e '@.route' 2>/dev/null)
+		json_set_namespace obhod_route_ old_namespace
+		[ -n "$route" ] && json_load "$route" 2>/dev/null || json_init
+		json_get_vars name delay checkedAt receivedAt diagnosedAt failedAt historyUnavailable maxAge
+		json_set_namespace "$old_namespace"
+		json_add_string routeName "$name"
+		json_add_string routeDelay "$delay"
+		json_add_string routeCheckedAt "$checkedAt"
+		json_add_string routeReceivedAt "$receivedAt"
+		json_add_string routeDiagnosedAt "$diagnosedAt"
+		json_add_string routeFailedAt "$failedAt"
+		json_add_boolean routeHistoryUnavailable "${historyUnavailable:-0}"
+		json_add_string routeMaxAge "$maxAge"
+		json_add_string routeStaleMinutes "$(cat "$STALE_AGE" 2>/dev/null)"
 		json_dump
 		;;
 	coreVersions)
@@ -166,6 +174,18 @@ case "$2" in
 		# Do not export large text through jshn's environment (Linux limits each
 		# argument/environment entry). Base64 can be streamed safely as JSON.
 		ucode -e 'import { readfile } from "fs"; printf("{\"ok\":true,\"base64\":\"%s\"}\n", b64enc(readfile(ARGV[0])));' "$file"
+		;;
+	routeStaleAge)
+		minutes=$(jsonfilter -i "$request" -e '@.minutes' 2>/dev/null) || { reply 0 'Укажите порог в минутах.'; exit 0; }
+		case "$minutes" in 0*|*[!0-9]*|?????*) minutes=invalid ;; esac
+		if [ -n "$minutes" ] && ! [ "$minutes" -le 1440 ] 2>/dev/null; then
+			reply 0 'Укажите целое число от 1 до 1440 минут или оставьте поле пустым.'; exit 0
+		fi
+		[ "$minutes" != "$(cat "$STALE_AGE" 2>/dev/null)" ] || { reply 1; exit 0; }
+		file=$(mktemp /etc/obhod/route-stale.XXXXXX) || { reply 0 'Не удалось сохранить порог замера.'; exit 0; }
+		trap 'rm -f "$request" "$file"' EXIT
+		printf '%s\n' "$minutes" > "$file" && mv "$file" "$STALE_AGE" &&
+			reply 1 || reply 0 'Не удалось сохранить порог замера.'
 		;;
 	apply|start|stop)
 		# Serialize configuration writes and start/stop operations from all sessions.

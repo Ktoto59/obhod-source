@@ -23,13 +23,10 @@ let proxies = json(readfile(ARGV[1]) || '{}').proxies || {};
 if (routing.failoverEnabled) tag = proxies.proxy?.now || '';
 if (!match(tag, /^tunnel-[a-zA-Z0-9_-]+$/)) tag = '';
 if (mode == 'tag') { if (!routing.failoverEnabled || ARGV[2] == 'diagnose') print(tag); exit(0); }
-let selected;
-for (let tunnel in settings.profile.tunnels) if ('tunnel-' + replace(tunnel.id, /[^a-z0-9_-]/gi, '_') == tag) selected = tunnel;
 let delay = json(readfile(ARGV[2]) || '{}').delay;
-let explicit = ARGV[3] == 'diagnose', active = explicit || ARGV[3] == 'active', proxy = proxies[tag];
-let history = proxy?.history || [], sample = length(history) ? history[length(history) - 1] : null;
-if (!active) delay = sample?.delay;
-let valid = type(delay) == 'int' && delay > 0 && delay < 60000;
+let explicit = ARGV[3] == 'diagnose', active = explicit || ARGV[3] == 'active';
+let startedFor = ARGV[5], probeAt = int(ARGV[4] || 0);
+function validDelay(value) { return type(value) == 'int' && value > 0 && value < 60000; }
 // Clash serializes URLTestHistory.Time as RFC3339, including fractional seconds
 // and local UTC offsets. Interpret the sample independently of the router's TZ.
 function historyTime(value) {
@@ -43,13 +40,36 @@ function historyTime(value) {
     }
     return stamp > 0 ? stamp : null;
 }
-let receivedAt = time(), measuredAt = active ? receivedAt : historyTime(sample?.time);
+let receivedAt = time();
+let oldSamples = json(readfile('/var/run/obhod/telemetry.json') || '{}').samples || {};
+let samples = {}, selected, historyUnavailable = false, probeOk = false;
+for (let tunnel in settings.profile.tunnels) {
+    let key = 'tunnel-' + replace(tunnel.id, /[^a-z0-9_-]/gi, '_');
+    let proxy = proxies[key], history = proxy?.history || [];
+    let latest = length(history) ? history[length(history) - 1] : null;
+    let stamp = historyTime(latest?.time);
+    let sample = oldSamples[key] || {};
+    if (stamp != null && stamp > (sample.checkedAt || 0) && stamp > (sample.failedAt || 0)) {
+        if (validDelay(latest.delay)) sample = { delay: latest.delay, checkedAt: stamp };
+        else sample.failedAt = stamp;
+    }
+    if (key == tag) {
+        selected = tunnel;
+        if (active && key == startedFor && probeAt > 0) {
+            probeOk = validDelay(delay);
+            if (probeOk) sample = { delay, checkedAt: probeAt };
+            else sample.failedAt = probeAt;
+        }
+        // A failed probe or connection can remove urltest history. The API
+        // doesn't expose why it was removed or when, so report only its absence.
+        historyUnavailable = !active && !!proxy && !latest && !!sample.checkedAt;
+    }
+    if (sample.checkedAt || sample.failedAt) samples[key] = sample;
+}
+let sample = samples[tag] || {};
 let interval = match(routing.failoverInterval || '15s', /^([0-9]+)(s|m|h)$/);
-let maxAge = active ? 90 : interval ? int(interval[1]) * (interval[2] == 'h' ? 3600 : interval[2] == 'm' ? 60 : 1) : 15;
-// An absent urltest sample means unknown latency, not a failed connection.
-// Only explicit diagnosis or an actual failed urltest sample reports failure.
-let ok = active ? valid : !!proxy && (!sample || valid);
-printf('%J\n', { name: selected?.name || '', tag, delay: valid ? delay : null, ok,
-    checkedAt: measuredAt, receivedAt, diagnosedAt: explicit ? receivedAt : null,
-    known: active || (sample != null && measuredAt != null), maxAge,
-    delayTime: active ? null : sample?.time, diagnostic: explicit });
+let maxAge = !routing.failoverEnabled || active ? 90 : interval ? int(interval[1]) * (interval[2] == 'h' ? 3600 : interval[2] == 'm' ? 60 : 1) : 15;
+let route = { name: selected?.name || '', tag, delay: sample.delay,
+    checkedAt: sample.checkedAt, receivedAt, diagnosedAt: explicit && startedFor == tag && probeAt > 0 ? probeAt : null,
+    failedAt: sample.failedAt, historyUnavailable, maxAge, probeOk };
+printf('%J\n', { route, samples });

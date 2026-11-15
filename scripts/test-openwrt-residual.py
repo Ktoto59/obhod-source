@@ -515,58 +515,91 @@ echo '{}'
         self.assertNotEqual(self.op('release', 'update', token, os.getpid()).returncode, 0)
         self.assertEqual(self.op('release', 'apply', new, os.getpid()).returncode, 0)
 
+    def telemetry(self, mode='passive', probe_at='', tag=''):
+        response = self.run_in('ucode', '/usr/libexec/obhod/inspect.uc', 'result',
+                               '/tmp/proxies', '/tmp/delay', mode, str(probe_at), tag)
+        self.assertEqual(response.returncode, 0, response.stderr)
+        self.write('var/run/obhod/telemetry.json', response.stdout)
+        return json.loads(response.stdout)['route']
+
     def test_history_timestamp_is_measurement_time(self):
-        self.write('etc/obhod/settings.json', json.dumps({'profile': {'routing': {'failoverEnabled': True}, 'tunnels': [{'id':'b','name':'B'}]}}))
+        self.write('etc/obhod/settings.json', json.dumps({'profile': {'routing': {'failoverEnabled': True},
+                   'tunnels': [{'id': 'b', 'name': 'B'}]}}))
         stamp = int(time.time()) - 601
-        self.write('tmp/proxies', json.dumps({'proxies': {'proxy': {'now':'tunnel-b'}, 'tunnel-b': {'history':[{'time':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime(stamp)), 'delay':83}]}}}))
+        history = [{'time': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(stamp)), 'delay': 83}]
+        self.write('tmp/proxies', json.dumps({'proxies': {'proxy': {'now': 'tunnel-b'},
+                   'tunnel-b': {'history': history}}}))
         self.write('tmp/delay', '{"delay":42}')
-        def inspect(mode):
-            r = self.run_in('ucode', '/usr/libexec/obhod/inspect.uc', 'result', '/tmp/proxies', '/tmp/delay', mode)
-            self.assertEqual(r.returncode, 0, r.stderr)
-            return json.loads(r.stdout)
         for _ in range(2):
-            result = inspect('passive')
-            self.assertEqual(result['checkedAt'], stamp)
-            self.assertGreater(result['receivedAt'], stamp)
-            self.assertIsNone(result['diagnosedAt'])
-        result = inspect('diagnose')
-        self.assertGreater(result['checkedAt'], stamp)
-        self.assertEqual(result['diagnosedAt'], result['checkedAt'])
+            sample = self.telemetry()
+            self.assertEqual(sample['checkedAt'], stamp)
+            self.assertGreater(sample['receivedAt'], stamp)
+            self.assertIsNone(sample['diagnosedAt'])
+            self.assertEqual(self.rpc('status')['routeCheckedAt'], str(stamp))
+
+        probe_at = int(time.time()) - 2
+        sample = self.telemetry('diagnose', probe_at, 'tunnel-b')
+        self.assertEqual(sample['checkedAt'], probe_at)
+        self.assertEqual(sample['diagnosedAt'], probe_at)
+        self.assertGreater(sample['receivedAt'], sample['checkedAt'])
+        self.write('tmp/delay', '{}')
+        failed = self.telemetry('diagnose', probe_at + 1, 'tunnel-b')
+        self.assertEqual(failed['delay'], 42)
+        self.assertEqual(failed['checkedAt'], probe_at)
+        self.assertEqual(failed['failedAt'], probe_at + 1)
+        self.assertFalse(failed['probeOk'])
+        self.assertEqual(self.telemetry()['failedAt'], probe_at + 1)
+        self.assertEqual(self.rpc('status')['routeFailedAt'], str(probe_at + 1))
 
     def test_history_fresh_stale_absent_offsets_and_server_switch(self):
-        settings = {'profile': {'routing': {'failoverEnabled':True, 'failoverInterval':'5m'},
-                    'tunnels':[{'id':'a','name':'A'}, {'id':'b','name':'B'}]}}
+        settings = {'profile': {'routing': {'failoverEnabled': True, 'failoverInterval': '5m'},
+                    'tunnels': [{'id': 'a', 'name': 'A'}, {'id': 'b', 'name': 'B'}]}}
         self.write('etc/obhod/settings.json', json.dumps(settings))
         self.write('tmp/delay', '{}')
-        stamp = int(time.time())
-        for age, date, delay in [(10, None, 83), (301, None, 83), (0, 'missing', None),
-                                  (10, 'offset', 83), (10, 'invalid', 83), (10, None, 0)]:
-            with self.subTest(age=age, date=date, delay=delay):
-                value = time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime(stamp-age+(18000 if date == 'offset' else 0)))
-                value += '.123456789+05:00' if date == 'offset' else 'Z'
-                if date == 'invalid': value = 'invalid'
-                history = [] if date == 'missing' else [{'time':value,'delay':delay}]
-                self.write('tmp/proxies', json.dumps({'proxies':{'proxy':{'now':'tunnel-a'}, 'tunnel-a':{'history':history},
-                    'tunnel-b':{'history':[{'time':'2026-01-01T00:00:00Z','delay':12}]}}}))
-                r = self.run_in('ucode', '/usr/libexec/obhod/inspect.uc', 'result', '/tmp/proxies', '/tmp/delay', 'passive')
-                self.assertEqual(r.returncode, 0, r.stderr)
-                result = json.loads(r.stdout)
-                self.assertEqual(result['name'], 'A')
-                self.assertEqual(result['maxAge'], 300)
-                self.assertEqual(result['known'], date not in ['missing','invalid'])
-                self.assertEqual(result['checkedAt'], None if date in ['missing','invalid'] else stamp-age)
-                if date == 'missing': self.assertTrue(result['ok'])
-                if delay == 0: self.assertFalse(result['ok'])
-                self.write('var/run/obhod/telemetry.json', json.dumps(result))
-                status = self.rpc('status')
-                self.assertEqual(status['routeKnown'], result['known'])
-                self.assertEqual(status['routeMaxAge'], '300')
-        data = json.loads((self.lab/'tmp/proxies').read_text()); data['proxies']['proxy']['now'] = 'tunnel-b'
-        self.write('tmp/proxies', json.dumps(data))
-        r = self.run_in('ucode', '/usr/libexec/obhod/inspect.uc', 'result', '/tmp/proxies', '/tmp/delay', 'passive')
-        result = json.loads(r.stdout)
-        self.assertEqual((result['name'], result['delay']), ('B',12))
-        self.assertLess(result['checkedAt'], stamp-300)
+        stamp = int(time.time()) - 600
+        shifted = time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime(stamp + 18000)) + '.123456789+05:00'
+        values = {'proxy': {'now': 'tunnel-a'}, 'tunnel-a': {'history': [{'time': shifted, 'delay': 83}]},
+                  'tunnel-b': {'history': [{'time': 'invalid', 'delay': 40}]}}
+        def inspect():
+            self.write('tmp/proxies', json.dumps({'proxies': values}))
+            return self.telemetry()
+        self.assertEqual(inspect()['checkedAt'], stamp)
+        self.assertEqual(self.rpc('status')['routeMaxAge'], '300')
+        # The API may remove history without a timestamp or failure reason.
+        values['tunnel-a']['history'] = []
+        sample = inspect()
+        self.assertEqual((sample['delay'], sample['checkedAt']), (83, stamp))
+        self.assertTrue(sample['historyUnavailable'])
+        self.assertTrue(self.rpc('status')['routeHistoryUnavailable'])
+        values['proxy']['now'] = 'tunnel-b'
+        sample = inspect()
+        self.assertEqual(sample['name'], 'B')
+        self.assertIsNone(sample.get('delay'))
+        self.assertIsNone(sample.get('checkedAt'))
+        switched = self.rpc('status')
+        self.assertEqual(switched['routeName'], 'B')
+        self.assertEqual(switched['routeDelay'], '')
+        # An in-flight probe for A must not become a result for the new B.
+        self.write('tmp/delay', '{"delay":13}')
+        self.assertIsNone(self.telemetry('diagnose', stamp + 1, 'tunnel-a').get('delay'))
+        values['proxy']['now'] = 'tunnel-a'
+        self.assertEqual(inspect()['checkedAt'], stamp)
+
+    def test_display_threshold_saves_without_applying_profile(self):
+        self.write('etc/obhod/settings.json', '{"existing":true}')
+        self.write('var/run/obhod/config.json', '{"active":true}')
+        self.write('var/run/obhod/ready', '')
+        self.write('usr/libexec/obhod/control', '#!/bin/sh\ntouch /tmp/display-restart\nexit 1\n')
+        for minutes in ('3', '1440', ''):
+            self.assertTrue(self.rpc('routeStaleAge', {'minutes': minutes})['ok'])
+            self.assertEqual(self.rpc('status')['routeStaleMinutes'], minutes)
+        for minutes in ('0', '1441', '3.5', '3\n100', 'x'):
+            self.assertFalse(self.rpc('routeStaleAge', {'minutes': minutes})['ok'])
+        self.assertEqual(self.rpc('status')['routeStaleMinutes'], '')
+        self.assertFalse((self.lab / 'tmp/display-restart').exists())
+        self.assertTrue((self.lab / 'var/run/obhod/ready').exists())
+        self.assertEqual((self.lab / 'etc/obhod/settings.json').read_text(), '{"existing":true}')
+        self.assertEqual((self.lab / 'var/run/obhod/config.json').read_text(), '{"active":true}')
 
     def test_failed_service_stop_restores_running_dns_and_enabled_intent(self):
         self.dns_fixture(); self.dns('apply')

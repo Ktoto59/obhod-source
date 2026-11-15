@@ -2,11 +2,11 @@
 import { readfile, access } from 'fs';
 let work = ARGV[0], settings = json(readfile('/etc/obhod/settings.json') || '{}');
 let running = access('/var/run/obhod/ready');
-let route = json(readfile('/var/run/obhod/telemetry.json') || '{}');
+let route = json(readfile(work + '/route') || '{}').route || {};
 let devices = settings.options?.interfaces || ['br-lan'];
 let missing = filter(devices, name => !access('/sys/class/net/' + name));
 let intercept = !!running && !!access('/sys/class/net/obhod-tun') && !!access(work + '/firewall-ok');
-let routeOk = !!running && !!route.ok && !!route.diagnostic && route.delay > 0 && time() - route.checkedAt < 90;
+let routeOk = !!running && !!route.probeOk && route.delay > 0 && time() - route.diagnosedAt < 90;
 let checks = [
     { name: 'Конфигурация', ok: access(work + '/config-ok'), message: access(work + '/config-ok') ? 'Ядро принимает сохранённые настройки.' : (trim(readfile(work + '/config-error') || '') || 'Проверка конфигурации не завершилась.') },
     { name: 'Служба', ok: running, message: running ? 'Служба запущена и готова.' : 'Обход выключен. Включите его для проверки маршрута.' },

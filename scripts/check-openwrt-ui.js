@@ -83,6 +83,8 @@ app.whenReady().then(async () => {
       }
       const view = { extend: value => value };
       let staged=[], uploadChunks=0, handlerWork, logRequests=0;
+      let routeStaleMinutes = '';
+      const measuredAt = Math.floor(Date.now()/1000) - 120;
       const rpc = { declare: spec => async (...args) => {
         if (spec.object === 'obhod') assert(spec.nobatch === true, 'Obhod RPC calls must not share a batch');
         assert(new TextEncoder().encode(JSON.stringify(args)).length<60000,'Every RPC request stays below the device parser limit');
@@ -91,12 +93,13 @@ app.whenReady().then(async () => {
           if(args[0]==='chunk') {assert(args[3]===staged.length,'Sequential chunks');staged.push(atob(args[2]));uploadChunks++;return {ok:true};}
           return {ok:true};
         }
+        if (spec.method === 'routeStaleAge') { routeStaleMinutes = args[0]; return {ok:true}; }
         if (spec.method === 'status') {
           if (failStatus) throw new Error('No related RPC reply');
           return { dnsPoolReady, running, configured: true, version: 'sing-box version 1.12.22', coreFlavor, coreBusy, wireguard,
             obhodVersion:appVersion, updateBusy, updateAvailable, updateState, availableVersion:'0.1.7',jobBusy,jobState,
-            routeName:'Сервер из работающего ядра',routeDelay:'83',routeOk:true,routeKnown:true,routeMaxAge:90,
-            routeCheckedAt:Math.floor(Date.now()/1000),routeReceivedAt:Math.floor(Date.now()/1000) };
+            routeName:'Сервер из работающего ядра',routeDelay:'83',routeMaxAge:90,routeStaleMinutes,
+            routeCheckedAt:measuredAt,routeReceivedAt:Math.floor(Date.now()/1000) };
         }
         if(spec.method==='interfaces') return {devices:[{name:'br-lan',label:'lan · br-lan · 192.0.2.1',up:true},{name:'br-guest',label:'guest · br-guest',up:true}]};
         if(spec.method==='coreVersions') return {versions:['lite','full'].flatMap(profile=>[{profile,value:'1.13.21-obhod.5',recommended:true,downloadBytes:11010846,installedBytes:31160083},{profile,value:'1.13.21-obhod.3',recommended:false,downloadBytes:11000000,installedBytes:31000000}])};
@@ -290,7 +293,16 @@ app.whenReady().then(async () => {
       page.serviceButton.click();await handlerWork;assert(!running && page.serviceButton.textContent==='Включить','Actual click stops service even when LuCI disables the button');
       page.serviceButton.click();await handlerWork;assert(running && serviceRequests.at(-1)==='start' && saves===1,'Separate start uses saved configuration');
       page.restartButton.click();await handlerWork;assert(running && serviceRequests.at(-1)==='restart' && saves===1,'Restart uses the saved configuration');
-      assert(page.liveRoute.textContent==='Сервер из работающего ядра' && page.liveDelay.textContent==='83 мс','Header displays actual selected route and delay: '+page.liveRoute.textContent+' / '+page.liveDelay.textContent);
+      assert(page.overviewLiveRoute.textContent==='Сервер из работающего ядра' && page.overviewLiveDelay.textContent.startsWith('83 мс · '),'Overview shows selected server, latency and sample time');
+      assert(page.routeStale.textContent==='Замер устарел','Old success stays visible with a stale label');
+      const previousSaves = saves, previousActions = serviceRequests.length;
+      page.selectTab('connections');
+      page.staleMinutes.value = '3';
+      page.staleAgeSave.click(); await handlerWork;
+      assert(page.staleAgeMessage.textContent==='Порог сохранён' && page.routeStale.textContent==='','Display threshold takes effect');
+      assert(saves===previousSaves && serviceRequests.length===previousActions,'Threshold saves without applying or restarting');
+      await poller();
+      assert(page.overviewLiveDelay.textContent.includes(page.formatSystemTime(measuredAt,false)),'RPC polling preserves the sample time');
       await page.runDiagnostics();assert(diagnosticRequests.length===1 && page.diagnosticButton.disabled,'Background diagnostics starts');
       jobBusy=false;jobState='done';page.updateStatus(await rpc.declare({method:'status'})());await page.refreshDiagnostics();
       assert(page.diagnosticRows.querySelector('.is-ok .ob-check-ok').textContent.includes('✓') && page.diagnosticRows.querySelector('.is-fail .ob-check-fail').textContent.includes('✕'),'Diagnostic outcomes have colored cards and text indicators');

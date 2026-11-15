@@ -421,8 +421,8 @@ def observability_tests():
     try:
         (LAB/'var/run/obhod/ready').touch()
         inside('/usr/libexec/obhod/monitor','once')
-        metrics=json.loads((LAB/'var/run/obhod/telemetry.json').read_text())
-        assert metrics['name']=='Selected' and metrics['delay']==83 and metrics['ok']
+        metrics=json.loads((LAB/'var/run/obhod/telemetry.json').read_text())['route']
+        assert metrics['name']=='Selected' and metrics['delay']==83 and not metrics['failedAt']
         # procd transport is stubbed, while worker execution, parsing and locks are real.
         ubus=LAB/'bin/ubus'; shutil.copyfile(ubus,LAB/'tmp/real-ubus');ubus.unlink()
         ubus.write_text('''#!/bin/sh
