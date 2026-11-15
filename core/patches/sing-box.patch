@@ -197,7 +197,7 @@
  		return continueResult
 --- a/protocol/tun/inbound.go
 +++ b/protocol/tun/inbound.go
-@@ -391,6 +391,7 @@
+@@ -391,6 +391,7 @@ func (t *Inbound) Start(stage adapter.StartStage, scope *adapter.Scope) error {
  					InterfaceFinder: t.networkManager.InterfaceFinder(),
  					TableName:       "sing-box",
  					DisableNFTables: t.disableNFTables,
@@ -205,7 +205,7 @@
  				})
  			}
  			if err != nil {
-@@ -553,12 +554,21 @@
+@@ -553,12 +554,21 @@ func (t *Inbound) updateRouteAddressSet(it adapter.RuleSet) {
  	}
  }
  
@@ -229,10 +229,12 @@
  		include = []netip.Prefix{netip.PrefixFrom(netip.IPv4Unspecified(), 32), netip.PrefixFrom(netip.IPv6Unspecified(), 128)}
  	}
  	exclude = common.FlatMap(t.routeExcludeAddressSet, (*netipx.IPSet).Prefixes)
-@@ -588,6 +598,13 @@
+@@ -587,7 +597,14 @@ func (t *Inbound) FlushSystemDNSCache() {
+ }
  
  func (t *Inbound) JudgeFlow(network uint8, source netip.AddrPort, destination netip.AddrPort, firstPacket []byte) tun.FlowVerdict {
- 	if slices.Contains(t.dnsHijackAddress, destination.Addr()) {
+-	if slices.Contains(t.dnsHijackAddress, destination.Addr()) {
++	if t.dnsServiceDestination(destination.Addr(), destination.Port()) {
 +		if network == uint8(header.UDPProtocolNumber) {
 +			return tun.FlowVerdict{Action: tun.ActionHijackDNS}
 +		}
@@ -243,7 +245,7 @@
  		if network == uint8(header.UDPProtocolNumber) {
  			return tun.FlowVerdict{Action: tun.ActionHijackDNS}
  		}
-@@ -608,13 +625,7 @@
+@@ -608,18 +625,21 @@ func (t *Inbound) JudgeFlow(network uint8, source netip.AddrPort, destination ne
  	}) {
  		return tun.FlowVerdict{Action: tun.ActionBypass}
  	}
@@ -258,3 +260,75 @@
  	return adapter.JudgeFlow(t.router, adapter.InboundContext{Inbound: t.tag, InboundType: C.TypeTun}, network, source, destination, firstPacket)
  }
  
++func (t *Inbound) dnsServiceDestination(address netip.Addr, port uint16) bool {
++	// OpenWrt auto-redirect DNAT changes only the destination address of :53.
++	// The service address by itself does not make an arbitrary port DNS.
++	if C.IsLinux && t.tunOptions.Name == "obhod-tun" && port != 53 {
++		return false
++	}
++	return slices.Contains(t.dnsHijackAddress, address)
++}
++
+ func (t *Inbound) isDNSHijackDestination(destination M.Socksaddr) bool {
+-	return slices.Contains(t.dnsHijackAddress, destination.Addr) || t.dnsHijackByPort && destination.Port == 53
++	return t.dnsServiceDestination(destination.Addr, destination.Port) || t.dnsHijackByPort && destination.Port == 53
+ }
+ 
+ func (t *Inbound) NewDNSPacket(payload []byte, source M.Socksaddr, destination M.Socksaddr, writer N.PacketWriter) {
+@@ -631,6 +651,16 @@ func (t *Inbound) NewDNSPacket(payload []byte, source M.Socksaddr, destination M
+ 	metadata.Source = source
+ 	metadata.Destination = destination
+ 	metadata.Protocol = C.ProtocolDNS
++	if C.IsLinux && t.tunOptions.Name == "obhod-tun" {
++		switch {
++		case t.dnsServiceDestination(destination.Addr, destination.Port):
++			metadata.DNSHijackPath = "tun-service-address"
++		case t.dnsHijackByPort && destination.Port == 53:
++			metadata.DNSHijackPath = "tun-port-53"
++		default:
++			metadata.DNSHijackPath = "tun-route-rule"
++		}
++	}
+ 	t.logger.InfoContext(ctx, "inbound DNS packet from ", source)
+ 	t.router.HijackDNSPacket(ctx, payload, writer, metadata)
+ }
+--- a/adapter/inbound.go
++++ b/adapter/inbound.go
+@@ -60,6 +60,8 @@ type InboundContext struct {
+ 	RouteOutbound string
+ 	OutboundChain []Outbound
+ 
++	DNSHijackPath string
++
+ 	// sniffer
+ 
+ 	Protocol     string
+--- a/route/dns.go
++++ b/route/dns.go
+@@ -15,6 +15,7 @@ import (
+ 	N "github.com/sagernet/sing/common/network"
+ 
+ 	mDNS "github.com/miekg/dns"
++	"golang.org/x/time/rate"
+ )
+ 
+ func (r *Router) hijackDNSStream(ctx context.Context, conn net.Conn, metadata adapter.InboundContext) error {
+@@ -53,11 +54,18 @@ func (r *Router) hijackDNSPacket(ctx context.Context, conn N.PacketConn, packetB
+ 	return nil
+ }
+ 
++// Limit metadata about malformed hijacked datagrams across all inbounds.
++var obhodDNSUnpackDetails = rate.NewLimiter(rate.Every(10*time.Second), 3)
++
+ func (r *Router) HijackDNSPacket(ctx context.Context, payload []byte, writer N.PacketWriter, metadata adapter.InboundContext) {
+ 	var message mDNS.Msg
+ 	err := message.Unpack(payload)
+ 	if err != nil {
+ 		r.logger.ErrorContext(ctx, E.Cause(err, "process DNS packet: unpack request"))
++		if metadata.DNSHijackPath != "" && obhodDNSUnpackDetails.Allow() {
++			r.logger.InfoContext(ctx, "DNS unpack details: src=", metadata.Source, " dst=", metadata.Destination,
++				" payload_len=", len(payload), " path=", metadata.DNSHijackPath)
++		}
+ 		return
+ 	}
+ 	r.searchProcessInfo(ctx, &metadata)

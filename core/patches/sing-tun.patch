@@ -237,3 +237,28 @@
  		}
  		buffer.Release()
  	}
+--- a/flow_dns.go
++++ b/flow_dns.go
+@@ -12,11 +12,21 @@ import (
+ )
+ 
+ func (d *ForwardDispatcher) hijackDNSPacket(packet *forwardPacket) {
++	// Transport can include IP padding. Never pass that padding or a truncated
++	// UDP datagram to the DNS wire decoder.
++	udp := header.UDP(packet.transport)
++	if len(udp) < header.UDPMinimumSize {
++		return
++	}
++	length := int(udp.Length())
++	if length < header.UDPMinimumSize || length > len(udp) {
++		return
++	}
+ 	writer := &dnsResponseWriter{
+ 		writeback: d.writeback,
+ 		source:    packet.source,
+ 	}
+-	d.handler.NewDNSPacket(header.UDP(packet.transport).Payload(), M.SocksaddrFromNetIP(packet.source), M.SocksaddrFromNetIP(packet.destination), writer)
++	d.handler.NewDNSPacket(udp[:length].Payload(), M.SocksaddrFromNetIP(packet.source), M.SocksaddrFromNetIP(packet.destination), writer)
+ }
+ 
+ type dnsResponseWriter struct {
