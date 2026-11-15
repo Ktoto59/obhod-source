@@ -426,6 +426,23 @@ app.whenReady().then(async () => {
     }
     for (const viewport of [320,390]) {
       window.setContentSize(viewport, 900);
+      const routeLayout = await window.webContents.executeJavaScript(`(() => {
+        const page = obhodPage;
+        page.selectTab('overview');
+        page.updateStatus({ ...page.lastStatus, running:true, routeName:'🇳🇱 Амстердам, Нидерланды, Extra',
+          routeDelay:'242', routeCheckedAt:Math.floor(Date.now()/1000)-300, routeMaxAge:90 });
+        const name = page.overviewLiveRoute.getBoundingClientRect();
+        const info = page.routeSummary.parentElement.getBoundingClientRect();
+        const delay = page.overviewLiveDelay.getBoundingClientRect();
+        const row = page.overviewLiveDelay.parentElement.getBoundingClientRect();
+        return { nameWidth:name.width, rowWidth:row.width, sameIndent:Math.abs(delay.left-name.left)<1,
+          delayBelow:delay.top>=info.bottom, delayFits:delay.right<=row.right+1 && page.overviewLiveDelay.scrollWidth<=delay.width+1,
+          delayVisible:page.overviewLiveDelay.textContent.startsWith('242 мс · '), stale:page.routeStale.textContent==='Замер устарел' };
+      })()`);
+      if (!(routeLayout.nameWidth >= routeLayout.rowWidth * 0.65 && routeLayout.sameIndent && routeLayout.delayBelow &&
+            routeLayout.delayFits && routeLayout.delayVisible && routeLayout.stale)) {
+        throw new Error('Mobile active route layout: '+JSON.stringify({viewport,...routeLayout}));
+      }
       for (const tab of ['overview','connections','rules','protocols','network','diagnostics']) {
         const width = await window.webContents.executeJavaScript(`obhodPage.selectTab(${JSON.stringify(tab)}); scrollTo(0,0); document.documentElement.scrollWidth <= innerWidth;`);
         if (!width) throw new Error('Mobile overflow '+viewport+': '+tab);
@@ -437,7 +454,10 @@ app.whenReady().then(async () => {
         }
       }
     }
-    await window.webContents.executeJavaScript("obhodPage.selectTab('rules'); setObhodTestTheme(true);scrollTo(0,0);");
+    await window.webContents.executeJavaScript("obhodPage.selectTab('overview'); setObhodTestTheme(true);scrollTo(0,0);");
+    await paint();
+    fs.writeFileSync(path.join(screenshots,'mobile-overview.png'),(await window.webContents.capturePage()).toPNG());
+    await window.webContents.executeJavaScript("obhodPage.selectTab('rules'); scrollTo(0,0);");
     await paint();fs.writeFileSync(path.join(screenshots,'mobile-rules.png'),(await window.webContents.capturePage()).toPNG());
     await window.webContents.executeJavaScript("obhodPage.selectTab('connections'); scrollTo(0,0);");
     await paint();

@@ -365,8 +365,11 @@ to { opacity:1;transform:none }
 .obhod-app .ob-stat .ob-help { font-size: 10px; }
   .obhod-app .ob-stats { gap: 8px; }
 .obhod-app .ob-overview-route-name { font-size: 18px; }
-.obhod-app .ob-route-line { flex-wrap: wrap; }
-.obhod-app .ob-route-line > .ob-live-delay { margin-left: 50px; }
+.obhod-app .ob-route-line { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 8px 12px; }
+.obhod-app .ob-route-line > .ob-live-delay { grid-column: 2; min-width: 0; overflow-wrap: anywhere; }
+.obhod-app .ob-route-line > .ob-live-delay:empty { display: none; }
+.obhod-app .ob-columns > .ob-card > .ob-inline-footer { flex-wrap: wrap; }
+.obhod-app .ob-columns > .ob-card > .ob-inline-footer > .ob-button { margin-inline-start: auto; white-space: nowrap; }
 .obhod-app .ob-diagnostic-rows { grid-template-columns: minmax(0,1fr); }
 .obhod-app .ob-accordion > summary > .ob-help { display: none; }
 .obhod-app .ob-accordion-body { padding: 14px; }
