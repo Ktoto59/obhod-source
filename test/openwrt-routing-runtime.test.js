@@ -5,10 +5,12 @@ const net = require('node:net');
 const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const { parseProxyUri } = require('../shared/profile');
 const { defaultRouterProfile, generateRouterConfig } = require('../openwrt/lib/config');
-const binary = path.join(__dirname, '../windows/runtime/sing-box.exe');
+const binary = process.env.OBHOD_TEST_CORE || path.join(__dirname, '../windows/runtime/sing-box.exe');
+const experimental = fs.existsSync(binary) &&
+  spawnSync(binary, ['obhod-capabilities'], { encoding: 'utf8' }).stdout?.split(/\r?\n/).includes('obhod-experimental-1.15');
 const listen = server => new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve(server.address().port)));
 const close = server => new Promise(resolve => server.close(resolve));
 
@@ -54,6 +56,7 @@ test('router keeps a delayed domain on its proxy and leaves unrelated traffic di
     profile.routing.activeTunnelId = profile.tunnels[0].id;
     profile.routing.localLists = [{ id: 'local', name: 'Selected', enabled: true, domains: ['selected.example'], cidrs: [] }];
     const config = generateRouterConfig(profile);
+    if (experimental) delete config.dns.independent_cache;
     config.log = { level: 'fatal' };
     config.experimental = {};
     config.inbounds = [{ type: 'direct', tag: 'ip-client', listen: '127.0.0.1', listen_port: port, override_address: '127.0.0.1', override_port: targetPort }];

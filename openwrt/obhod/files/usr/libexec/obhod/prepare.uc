@@ -91,4 +91,21 @@ config.route.rules = filter(config.route.rules, r => {
     if (index(terminalIPs, key) >= 0) return false;
     push(terminalIPs, key); return true;
 });
-writefile('/var/run/obhod/config.json', sprintf('%J\n', config));
+if (ARGV[0] == 'experimental-1.15') {
+    delete config.dns.independent_cache; // 1.15 always keys the cache by transport.
+    for (let inbound in config.inbounds) if (inbound.type == 'tun') delete inbound.stack;
+    for (let set in config.route.rule_set || []) {
+        if (set.type != 'remote') continue;
+        if (set.http_client && set.download_detour) die('Rule set has both http_client and download_detour');
+        if (!set.http_client) {
+            let outbound = filter(config.outbounds, o => o.tag == set.download_detour)[0];
+            if (set.download_detour && !(outbound?.type == 'direct' && length(keys(outbound)) == 2))
+                set.http_client = { detour: set.download_detour };
+            else
+                set.http_client = { domain_resolver: outbound?.domain_resolver ||
+                    config.route.default_domain_resolver || config.dns.final };
+        }
+        delete set.download_detour;
+    }
+}
+if (!writefile('/var/run/obhod/config.json', sprintf('%J\n', config))) die('Cannot write runtime configuration');

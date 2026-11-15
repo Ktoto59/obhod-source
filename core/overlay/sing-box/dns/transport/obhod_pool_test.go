@@ -27,9 +27,12 @@ type poolStub struct {
 	canceled atomic.Int32
 }
 
-func (s *poolStub) Start(adapter.StartStage) error { return nil }
-func (s *poolStub) Close() error                   { return nil }
-func (s *poolStub) Reset()                         {}
+func (s *poolStub) Start(adapter.StartStage, *adapter.Scope) error { return nil }
+func (s *poolStub) Close() error                                   { return nil }
+func (s *poolStub) Reset()                                         {}
+func (s *poolStub) ExchangeAsync(ctx context.Context, query *dns.Msg, callback func(*dns.Msg, error)) {
+	callback(s.Exchange(ctx, query))
+}
 func (s *poolStub) Exchange(ctx context.Context, query *dns.Msg) (*dns.Msg, error) {
 	s.count.Add(1)
 	if s.silent {

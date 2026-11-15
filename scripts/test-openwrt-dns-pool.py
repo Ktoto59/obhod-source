@@ -246,8 +246,11 @@ def test_filtered_fakeip(lab, inside, processes, pool_log):
         for server in servers:server.shutdown();server.server_close()
 
 
-def main(native_core=None):
-    archive = TOOLS/'rootfs.tar.gz'
+def main(native_core=None, tools=TOOLS):
+    archive = tools/'rootfs.tar.gz'
+    experimental = native_core and 'obhod-experimental-1.15' in subprocess.check_output(
+        [str(native_core), 'obhod-capabilities'], text=True,
+    ).splitlines()
     assert hashlib.sha256(archive.read_bytes()).hexdigest() == '55e52bb34de582a1ebe56bd50f94ff54ac7c77f5bca9cae807656d1930456da4'
     for port in [1053, 1153, 1154, 1156, 2081, *range(12053, 12067)]:
         with socket.socket() as probe: probe.bind(('127.0.0.1', port))
@@ -265,7 +268,7 @@ def main(native_core=None):
             for path in ['etc/obhod','var/run/obhod','usr/libexec/obhod']:(lab/path).mkdir(parents=True,exist_ok=True)
             resolver=lab/'etc/resolv.conf';resolver.unlink(missing_ok=True)
             resolver.write_text(Path('/etc/resolv.conf').read_text())
-            staged_socket = ROOT/'.tmp/dns-policy-tools/usr/lib/ucode/socket.so'
+            staged_socket = tools.parent/'dns-policy-tools/usr/lib/ucode/socket.so'
             if staged_socket.exists():shutil.copyfile(staged_socket, lab/'usr/lib/ucode/socket.so')
             else:
                 installed=subprocess.run(['chroot',lab,'/usr/bin/apk','--no-cache','add','ucode-mod-socket'],text=True,capture_output=True)
@@ -293,10 +296,11 @@ console.log(JSON.stringify({version:1,profile,options,config}));'''
                 assert result.returncode==0,result.stderr or result.stdout
                 return result
             pool_log=open(lab/'tmp/pool.log','w+')
-            shutil.copyfile(native_core or TOOLS/'sing-box-linux',lab/'usr/bin/sing-box'); (lab/'usr/bin/sing-box').chmod(0o755)
+            shutil.copyfile(native_core or tools/'sing-box-linux',lab/'usr/bin/sing-box'); (lab/'usr/bin/sing-box').chmod(0o755)
             core_log = open(lab/'tmp/core.log','w+')
             def start():
-                inside('/usr/bin/ucode','/usr/libexec/obhod/prepare.uc')
+                mode = ['experimental-1.15'] if experimental else []
+                inside('/usr/bin/ucode','/usr/libexec/obhod/prepare.uc', *mode)
                 portable = json.loads(settings_path.read_text())['options']['dnsPoolMode'] == 'fallback'
                 if native_core:
                     inside('/usr/bin/ucode','/usr/libexec/obhod/native-dns.uc')
@@ -507,4 +511,6 @@ console.log(JSON.stringify({version:1,profile,options,config}));'''
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--native-core',type=Path)
-    main(parser.parse_args().native_core)
+    parser.add_argument('--tools',type=Path,default=TOOLS)
+    args = parser.parse_args()
+    main(args.native_core.resolve() if args.native_core else None, args.tools.resolve())

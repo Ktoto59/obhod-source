@@ -3,3 +3,4 @@
 *.ico binary
 openwrt/** text eol=lf
 scripts/build-openwrt* text eol=lf
+core/patches/*.patch whitespace=-blank-at-eol,-blank-at-eof,-space-before-tab

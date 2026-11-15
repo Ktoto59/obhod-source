@@ -6,11 +6,13 @@ const os = require('node:os');
 const net = require('node:net');
 const http = require('node:http');
 const dgram = require('node:dgram');
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const { once } = require('node:events');
 const { parseProxyUri } = require('../shared/profile');
 const { defaultRouterProfile, generateRouterConfig } = require('../openwrt/lib/config');
 const binary = process.env.OBHOD_TEST_CORE || path.join(__dirname, '../windows/runtime/sing-box.exe');
+const experimental = fs.existsSync(binary) &&
+  spawnSync(binary, ['obhod-capabilities'], { encoding: 'utf8' }).stdout?.split(/\r?\n/).includes('obhod-experimental-1.15');
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function listen(server) { server.listen(0, '127.0.0.1'); await once(server, 'listening'); return server.address().port; }
 async function bind(socket) { socket.bind(0, '127.0.0.1'); await once(socket, 'listening'); return socket.address().port; }
@@ -93,6 +95,7 @@ test('FakeIP keeps TCP/UDP on the selected tunnel without SNI and preserves name
     config.inbounds = [{ type: 'mixed', tag: 'mixed-in', listen: '127.0.0.1', listen_port: port }, { type: 'direct', tag: 'dns-in', listen: '127.0.0.1', listen_port: dnsIn }];
     config.experimental = { cache_file: { ...config.experimental.cache_file, path: path.join(directory, 'cache.db') } };
     config.dns.servers = config.dns.servers.map(s => s.type === 'fakeip' ? s : { type: 'udp', tag: s.tag, server: '127.0.0.1', server_port: dnsPort });
+    if (experimental) delete config.dns.independent_cache;
     const filename = path.join(directory, 'config.json'); fs.writeFileSync(filename, JSON.stringify(config));
     stderr = ''; child = spawn(binary, ['run', '-c', filename], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
     child.stderr.on('data', data => { stderr += data; });

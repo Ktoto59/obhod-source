@@ -7,7 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 
-const binary = path.join(__dirname, '..', 'windows/runtime', 'sing-box.exe');
+const binary = process.env.OBHOD_TEST_CORE || path.join(__dirname, '..', 'windows/runtime', 'sing-box.exe');
 
 function freePort() {
   return new Promise((resolve, reject) => {

@@ -1,117 +1,113 @@
 #!/usr/bin/env python3
-"""Package the patched core using the exact signed-index OpenWrt support files."""
+"""Build side-by-side OpenWrt packages for the experimental core."""
 import argparse
 import hashlib
 import importlib.util
 import json
 import os
 from pathlib import Path
-import re
 import shutil
 import struct
 import subprocess
 import tempfile
-import textwrap
 
-ROOT=Path(__file__).resolve().parent.parent
-VERSION='1.13.21-obhod.5'
-STOCK_HASHES={
-    ('mipsel_24kc','sing-box'):'9df59a6073a5e49a11894d1f837d3dcc1debe1c396434b55416bdf32929e69f4',
-    ('mipsel_24kc','sing-box-tiny'):'6323a0aa122f0b9556a256c9b4f85176ec42ce947bda7c9fa4294711023edd39',
-    ('aarch64_cortex-a53','sing-box'):'dea7599eeb61d3817a557d2e24cb19ee4180192c191b7f3e9eb08892ef731025',
-    ('aarch64_cortex-a53','sing-box-tiny'):'6d81d056af3852adcf92f9f176cda39411dac9cf845822794a81d3b1e9a43db5',
-}
+ROOT = Path(__file__).resolve().parent.parent
+PIN = json.loads((ROOT / 'core/upstream.json').read_text())
+VERSION = PIN['version']
+ARCHITECTURES = {'mipsel_24kc': ('mipsle', 8, 1), 'aarch64_cortex-a53': ('arm64', 183, 2)}
+PROFILES = ('lite', 'full')
+DEPENDENCIES = ('libc', 'ca-bundle', 'kmod-inet-diag', 'kmod-tun')
 
-
-def build(binaries,stocks,apk,output,support=None):
-    spec=importlib.util.spec_from_file_location('builder',ROOT/'scripts/build-openwrt-packages.py')
-    builder=importlib.util.module_from_spec(spec);spec.loader.exec_module(builder)
-    output.mkdir(parents=True,exist_ok=True);records=[]
-    for arch,goarch in [('mipsel_24kc','mipsle'),('aarch64_cortex-a53','arm64')]:
-        for profile,package in [('lite','sing-box-tiny'),('full','sing-box')]:
-            stock=stocks/arch/(package+'-1.13.21-r1.apk') if stocks else None
-            if stock:assert hashlib.sha256(stock.read_bytes()).hexdigest()==STOCK_HASHES[(arch,package)]
-            binary=binaries/f'sing-box-linux-{goarch}-{profile}'
-            header=binary.read_bytes()[:20]
-            assert header[:4]==b'\x7fELF' and header[5]==1
-            assert struct.unpack_from('<H',header,18)[0]==(8 if goarch=='mipsle' else 183)
-            metadata=subprocess.check_output([apk,'adbdump',stock],text=True) if stock else (support/arch/(package+'-metadata.txt')).read_text()
-            assert '\n  name: '+package+'\n' in metadata and '\n  arch: '+arch+'\n' in metadata
-            scripts={name:textwrap.dedent(body) for name,body in re.findall(r'^  (post-install|pre-deinstall|post-upgrade): \|\n((?:    .*\n)+)',metadata,re.M)}
-            assert set(scripts)=={'post-install','pre-deinstall','post-upgrade'}
-            with tempfile.TemporaryDirectory(prefix='obhod-core-package-') as temporary:
-                work=Path(temporary);stage=work/'root';stage.mkdir()
-                if stock:subprocess.run([apk,'--allow-untrusted','extract','--destination',stage,stock],check=True,stdout=subprocess.DEVNULL)
-                else:
-                    shutil.copytree(support/arch/package,stage,dirs_exist_ok=True)
-                    # NTFS and source-archive staging can lose POSIX modes.
-                    # Restore the modes captured from the verified stock APK.
-                    modes=json.loads((support/arch/(package+'-modes.json')).read_text())
-                    for name,mode in modes.items():
-                        path=stage/name
-                        assert path.resolve().is_relative_to(stage.resolve()) and 0<=mode<=0o777
-                        path.chmod(mode)
-                shutil.copyfile(binary,stage/'usr/bin/sing-box');(stage/'usr/bin/sing-box').chmod(0o755)
-                notice=stage/'usr/share/sing-box/obhod-core';notice.mkdir(parents=True,exist_ok=True)
-                shutil.copyfile(ROOT/'LICENSES/GPL-3.0-only.txt',notice/'COPYING')
-                (notice/'NOTICE').write_text('sing-box '+VERSION+' (GPL-3.0-or-later)\n'
-                    'Based on sing-box 628cb31ffa79cffffd34c2f9cde6cae044e4fc12 and sing-tun f3b42b8b8e061ef849213a776d9fcf3d5f6ea239.\n'
-                    'sing v0.8.14: 87773cc9c5b2a4e4fc05cbd2db304ba23ca13515.\n'
-                    'Patches: 31-bit table IDs, bounded DNS pools, DNS RCODE preservation, DNS UDP isolation, ICMP logging, kernel destination selection before NFQUEUE.\n'
-                    'Corresponding source and build instructions accompany this release.\n',encoding='utf-8')
-                args=[apk,'mkpkg','--info','name:'+package,'--info','version:1.13.21-r500',
-                    '--info','arch:'+arch,'--info','license:GPL-3.0-or-later',
-                    '--info','maintainer:Obhod contributors','--info','description:Sing-box with Obhod compatibility patches',
-                    '--info','url:https://github.com/Ktoto59/obhod-source',
-                    '--info','depends:ca-bundle kmod-inet-diag kmod-tun libc']
-                if profile=='lite':args+=['--info','provides:sing-box=1.13.21-r500 sing-box-tiny-any']
-                for name,body in scripts.items():
-                    file=work/name;file.write_text(body);args+=['--script',name+':'+str(file)]
-                artifact=output/f'{package}-1.13.21-r500_{arch}.apk'
-                subprocess.run(args+['--files',stage,'--output',artifact],check=True,
-                    env={**os.environ,'SOURCE_DATE_EPOCH':'0'})
-                files={f.relative_to(stage).as_posix():(f.read_bytes(),f.stat().st_mode&0o777) for f in stage.rglob('*') if f.is_file() and not f.relative_to(stage).as_posix().startswith('lib/apk/')}
-                control=f'Package: {package}\nVersion: 1.13.21-500\nArchitecture: {arch}\nMaintainer: Obhod contributors\nLicense: GPL-3.0-or-later\nSection: net\nDepends: libc, ca-bundle, kmod-inet-diag, kmod-tun\n'
-                if profile=='lite':control+='Provides: sing-box, sing-box-tiny-any\nConflicts: sing-box\n'
-                else:control+='Conflicts: sing-box-tiny\n'
-                control+='Require-User: sing-box=5566:sing-box=5566\nDescription: Sing-box with Obhod compatibility patches\n'
-                # APK accepts directory entries here; opkg attempts to copy the
-                # directory as a file during upgrade and aborts. Expand only the
-                # regular config files actually present in this package.
-                config_paths=set()
-                for entry in (stage/f'lib/apk/packages/{package}.conffiles').read_text().splitlines():
-                    path=stage/entry.lstrip('/')
-                    if path.is_dir():
-                        config_paths.update('/'+f.relative_to(stage).as_posix() for f in path.rglob('*') if f.is_file())
-                    elif path.is_file():config_paths.add('/'+path.relative_to(stage).as_posix())
-                    else:raise ValueError('Missing packaged configuration: '+entry)
-                conffiles=('\n'.join(sorted(config_paths))+'\n').encode()
-                controls={'control':(control.encode(),0o644),'postinst':(scripts['post-install'].encode(),0o755),'prerm':(scripts['pre-deinstall'].encode(),0o755),'conffiles':(conffiles,0o644)}
-                ipk=output/f'{package}_1.13.21-500_{arch}.ipk'
-                ipk.write_bytes(builder.tar_bytes({'debian-binary':(b'2.0\n',0o644),'control.tar.gz':(builder.tar_bytes(controls),0o644),'data.tar.gz':(builder.tar_bytes(files),0o644)}))
-                # Preserve original service files and packaging scripts for offline rebuilds.
-                support_output=output/'stock-support'/arch/package
-                shutil.copytree(stage,support_output,dirs_exist_ok=True)
-                (support_output/'usr/bin/sing-box').unlink()
-                (support_output.parent/(package+'-metadata.txt')).write_text(metadata)
-                modes={'.':stage.stat().st_mode&0o777}
-                modes.update({p.relative_to(stage).as_posix():p.stat().st_mode&0o777
-                    for p in stage.rglob('*') if p.relative_to(stage).as_posix()!='usr/bin/sing-box'})
-                (support_output.parent/(package+'-modes.json')).write_text(json.dumps(modes,sort_keys=True,indent=2)+'\n')
-                for manager,file in [('apk',artifact),('opkg',ipk)]:
-                    records.append({'arch':arch,'manager':manager,'profile':profile,'name':file.name,
-                        'version':'1.13.21-r500' if manager=='apk' else '1.13.21-500',
-                        'sha256':hashlib.sha256(file.read_bytes()).hexdigest(),'bytes':file.stat().st_size,
-                        'installedBytes':sum(len(content) for content,_ in files.values()),
-                        'releases':['25.12'] if manager=='apk' else ['24.10']})
-    (output/'packages.json').write_text(json.dumps({'schema':1,'version':VERSION,'packages':records},indent=2)+'\n')
-    print('Built',len(records),'packages')
+spec = importlib.util.spec_from_file_location('openwrt_packages', ROOT / 'scripts/build-openwrt-packages.py')
+openwrt_packages = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(openwrt_packages)
 
 
-if __name__=='__main__':
-    parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--binaries',type=Path,required=True)
-    inputs=parser.add_mutually_exclusive_group(required=True)
-    inputs.add_argument('--stocks',type=Path);inputs.add_argument('--support',type=Path)
-    parser.add_argument('--apk',required=True);parser.add_argument('--output',type=Path,required=True)
-    args=parser.parse_args();build(args.binaries.resolve(),args.stocks.resolve() if args.stocks else None,args.apk,args.output.resolve(),args.support.resolve() if args.support else None)
+def sha256(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def build(binaries, prepared, apk, output):
+    manifest_path = prepared / 'build-manifest.json'
+    manifest = json.loads(manifest_path.read_text())
+    if any(manifest.get(key) != value for key, value in PIN.items()):
+        raise ValueError('Build manifest does not match the experimental source pins')
+    upstream_version, revision = VERSION.split('-obhod.')
+    release, alpha = upstream_version.split('-alpha.')
+    versions = {'apk': f'{release}_alpha{alpha}-r{revision}', 'opkg': f'{release}~alpha{alpha}-{revision}'}
+    output.mkdir(parents=True, exist_ok=True)
+    records = []
+    for arch, (goarch, machine, elf_class) in ARCHITECTURES.items():
+        for profile in PROFILES:
+            binary = binaries / f'sing-box-linux-{goarch}-{profile}'
+            with binary.open('rb') as stream:
+                header = stream.read(20)
+            if header[:6] != b'\x7fELF' + bytes((elf_class, 1)) or struct.unpack_from('<H', header, 18)[0] != machine:
+                raise ValueError(f'Unexpected ELF architecture: {binary}')
+            name = f'obhod-experimental-core-{profile}'
+            location = Path(f'usr/lib/obhod-experimental/{profile}')
+            binary_path = (location / 'sing-box').as_posix()
+            description = 'Experimental Obhod sing-box core'
+            with tempfile.TemporaryDirectory(prefix='obhod-experimental-package-') as temporary:
+                stage = Path(temporary)
+                slot = stage / location
+                slot.mkdir(parents=True)
+                shutil.copyfile(binary, slot / 'sing-box')
+                (slot / 'sing-box').chmod(0o755)
+                licenses = slot / 'LICENSES'
+                licenses.mkdir()
+                for project, subdir in [('sing-box', 'source'), ('sing-tun', 'sing-tun'), ('sing', 'sing')]:
+                    shutil.copyfile(prepared / subdir / 'LICENSE', licenses / f'{project}.txt')
+                shutil.copyfile(ROOT / 'LICENSES/GPL-3.0-only.txt', licenses / 'GPL-3.0.txt')
+                shutil.copyfile(manifest_path, slot / 'build-manifest.json')
+                (slot / 'NOTICE').write_text(
+                    f'{VERSION}, GPL-3.0-or-later. See build-manifest.json for pinned sources.\n',
+                    encoding='utf-8',
+                )
+                apk_file = output / f'{name}-{versions["apk"]}_{arch}.apk'
+                metadata = [f'name:{name}', f'version:{versions["apk"]}', f'arch:{arch}',
+                            'license:GPL-3.0-or-later', 'maintainer:Obhod contributors',
+                            f'description:{description}', 'depends:' + ' '.join(DEPENDENCIES),
+                            'url:https://github.com/Ktoto59/obhod-source']
+                args = [apk, 'mkpkg', '--files', stage, '--output', apk_file]
+                for value in metadata:
+                    args.extend(['--info', value])
+                subprocess.run(args, env={**os.environ, 'SOURCE_DATE_EPOCH': '0'}, check=True)
+
+                control = f"""Package: {name}
+Version: {versions["opkg"]}
+Architecture: {arch}
+Maintainer: Obhod contributors
+License: GPL-3.0-or-later
+Section: net
+Depends: {', '.join(DEPENDENCIES)}
+Description: {description}
+"""
+                files = {p.relative_to(stage).as_posix(): (p.read_bytes(), p.stat().st_mode & 0o777)
+                         for p in stage.rglob('*') if p.is_file()}
+                tar = openwrt_packages.tar_bytes
+                ipk_file = output / f'{name}_{versions["opkg"]}_{arch}.ipk'
+                ipk_file.write_bytes(tar({
+                    'debian-binary': (b'2.0\n', 0o644),
+                    'control.tar.gz': (tar({'control': (control.encode(), 0o644)}), 0o644),
+                    'data.tar.gz': (tar(files), 0o644),
+                }))
+                for manager, artifact in [('apk', apk_file), ('opkg', ipk_file)]:
+                    records.append({
+                        'name': artifact.name, 'package': name, 'version': versions[manager],
+                        'profile': profile, 'arch': arch, 'manager': manager, 'binary': '/' + binary_path,
+                        'sha256': sha256(artifact), 'binarySha256': sha256(binary),
+                        'bytes': artifact.stat().st_size, 'release': '25.12' if manager == 'apk' else '24.10',
+                    })
+    shutil.copyfile(manifest_path, output / manifest_path.name)
+    catalog = {'schema': 1, 'channel': 'experimental', 'version': VERSION, 'packages': records}
+    (output / 'experimental-packages.json').write_text(json.dumps(catalog, indent=2) + '\n', encoding='utf-8')
+    print(f'Built {len(records)} packages in {output}')
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description=__doc__)
+    for argument in ('binaries', 'prepared', 'apk', 'output'):
+        parser.add_argument('--' + argument, required=True, type=Path)
+    args = parser.parse_args()
+    build(args.binaries.resolve(), args.prepared.resolve(), args.apk.resolve(), args.output.resolve())

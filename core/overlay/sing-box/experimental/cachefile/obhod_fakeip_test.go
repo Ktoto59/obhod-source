@@ -17,7 +17,7 @@ func TestObhodFakeIPMetadataSurvivesReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cache := &CacheFile{DB: db}
+	cache := &CacheFile{DB: db, pending: newPendingWrites()}
 	address := netip.MustParseAddr("198.18.0.2")
 	metadata := &adapter.FakeIPMetadata{Inet4Range: netip.MustParsePrefix("198.18.0.0/15"), Inet4Current: address}
 	if err = cache.FakeIPStoreWithMetadata(address, "selected.example", metadata); err != nil {
@@ -43,7 +43,7 @@ func TestObhodFakeIPMetadataSurvivesReopen(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	cache = &CacheFile{DB: db}
+	cache = &CacheFile{DB: db, pending: newPendingWrites()}
 	if saved := cache.FakeIPMetadata(); saved == nil || saved.Inet4Current != address {
 		t.Fatal("Cursor not recovered after reopen")
 	}

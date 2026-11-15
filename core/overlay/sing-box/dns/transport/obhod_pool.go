@@ -69,7 +69,7 @@ func newObhodPool(ctx context.Context, _ log.ContextLogger, tag string, options 
 	}, nil
 }
 
-func (p *obhodPool) Start(stage adapter.StartStage) error {
+func (p *obhodPool) Start(stage adapter.StartStage, _ *adapter.Scope) error {
 	if stage != adapter.StartStateStart {
 		return nil
 	}
@@ -136,18 +136,37 @@ func validPoolAnswer(request, answer *dns.Msg) bool {
 	return true
 }
 
-func (p *obhodPool) Exchange(parent context.Context, request *dns.Msg) (*dns.Msg, error) {
-	if err := parent.Err(); err != nil {
+func (p *obhodPool) Exchange(ctx context.Context, request *dns.Msg) (*dns.Msg, error) {
+	if err := p.admit(ctx); err != nil {
 		return nil, err
 	}
+	return p.exchange(ctx, request)
+}
+
+func (p *obhodPool) ExchangeAsync(ctx context.Context, request *dns.Msg, callback func(*dns.Msg, error)) {
+	if err := p.admit(ctx); err != nil {
+		callback(nil, err)
+		return
+	}
+	go func() { callback(p.exchange(ctx, request)) }()
+}
+
+func (p *obhodPool) admit(parent context.Context) error {
+	if err := parent.Err(); err != nil {
+		return err
+	}
 	if len(p.servers) < 2 {
-		return nil, fmt.Errorf("DNS pool has not started")
+		return fmt.Errorf("DNS pool has not started")
 	}
 	select {
 	case p.limit <- struct{}{}:
+		return nil
 	default:
-		return nil, fmt.Errorf("DNS pool concurrency limit reached")
+		return fmt.Errorf("DNS pool concurrency limit reached")
 	}
+}
+
+func (p *obhodPool) exchange(parent context.Context, request *dns.Msg) (*dns.Msg, error) {
 	ctx, cancel := context.WithTimeout(parent, 4*time.Second)
 	defer cancel()
 	answers := make(chan poolAnswer, len(p.servers))

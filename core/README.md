@@ -1,133 +1,74 @@
-# Совместимое сетевое ядро Обхода
+# Экспериментальное ядро Obhod
 
-`1.13.21-obhod.5` основано на sing-box 1.13.21, ревизия
-`628cb31ffa79cffffd34c2f9cde6cae044e4fc12`, и sing-tun v0.8.15, ревизия
-`f3b42b8b8e061ef849213a776d9fcf3d5f6ea239`, и sing v0.8.14, ревизия
-`87773cc9c5b2a4e4fc05cbd2db304ba23ca13515`.
+Версия `1.15.0-alpha.13-obhod.1` использует официальный prerelease
+[`v1.15.0-alpha.13`](https://github.com/SagerNet/sing-box/releases/tag/v1.15.0-alpha.13).
+Точные ревизии и версия Go находятся в [upstream.json](upstream.json).
+[Отчёт о портировании](../docs/SING_BOX_1_15_EXPERIMENTAL.md) описывает проверки и ограничения.
 
-Набор изменений:
+## Сборка из закреплённых исходников
 
-- FakeIP mapping и курсор выдачи адресов сохраняются одной транзакцией.
-  Метаданные не удаляются при чтении: восстановление после SIGKILL не
-  инвалидирует сохранённые адреса и не выдаёт уже занятый адрес повторно.
-- Redirect routes интерфейса `obhod-tun` помечаются отдельным протоколом;
-  восстановление и удаление затрагивают только маршруты Обхода, включая
-  оставшиеся после аварийного завершения.
-- DNS pool освобождает admission при отмене и ограничивает ожидание
-  отрицательного ответа, даже если остальные серверы молчат.
-
-- При положительном `route_address_set` nftables проверяет тот же обновляемый
-  набор до NFQUEUE. Невыбранные адреса и другие LAN-интерфейсы не попадают
-  в предварительную классификацию; DNS сохраняет штатный перехват. Приложение
-  объединяет в набор FakeIP, свои подсети и IP-части активных списков.
-
-- Номера дополнительных таблиц `auto_redirect` ограничены 31 битом. Это
-  предотвращает отрицательные значения и ошибочные записи loopback в `main`
-  на 32-битных MIPS.
-- DNS-транспорт `obhod-pool` объединяет 2–4 существующих DNS-транспорта.
-  `parallel` возвращает первый NOERROR/NXDOMAIN; `balanced` предпочитает
-  известный рабочий сервер и добавляет резерв через 350 мс. SERVFAIL/REFUSED
-  не перебивают успешный ответ. Лимит — 64 незавершённых обмена на группу,
-  общий тайм-аут — 4 с; проигравшие запросы отменяются. Пул не хранит ответы
-  или журнал доменов и не добавляет прямой DNS-выход.
-- При отсутствии успешного ответа возвращается корректный DNS-ответ
-  провайдера (например, REFUSED/SERVFAIL), если он был получен. Отказ фильтра
-  сохраняется, а транспортные сбои учитываются отдельно.
-- В TUN DNS-сессии UDP/53 привязаны к адресу назначения и изолированы от других
-  UDP-портов. Для STUN/WebRTC и остальных UDP-портов сохраняется прежняя общая
-  сессия. Перехваченный DNS имеет отдельный обновляемый тайм-аут 10 секунд.
-- Тайм-аут ICMP-соединения после получения ответов записывается на уровне
-  `debug`, отсутствие первого ответа — `warn`. Другие ошибки сокета остаются
-  на уровне `error`.
-- `sing-box obhod-capabilities` позволяет определить функции без разбора
-  строки версии и без замены пользовательской конфигурации.
-
-Полное ядро включает WireGuard; облегчённое сохраняет набор прокси-функций.
-Пакеты выпускаются для `mipsel_24kc` и `aarch64_cortex-a53`, APK для OpenWrt
-25.12 и IPK для 24.10. Совместимость конкретной прошивки проверяется отдельно.
-Windows-установщик пока использует прежнее AWG-совместимое ядро.
-
-## Сборка
-
-Сначала получите чистые upstream-репозитории на указанных ревизиях:
+В Linux или WSL с Go 1.26.10, Git и Python 3 выполните команды из корня ветки.
 
 ```sh
-python3 scripts/prepare-network-core.py --sing-box /path/to/sing-box \
-  --sing-tun /path/to/sing-tun --sing /path/to/sing --output /path/to/prepared
-sh core/build.sh /path/to/prepared /path/to/binaries mipsle lite
-sh core/build.sh /path/to/prepared /path/to/binaries arm64 full
+mkdir -p .tmp/core-1.15
+git clone --depth 1 --branch v1.15.0-alpha.13 https://github.com/SagerNet/sing-box.git .tmp/core-1.15/sing-box
+git init .tmp/core-1.15/sing-tun
+git -C .tmp/core-1.15/sing-tun fetch --depth 1 https://github.com/SagerNet/sing-tun.git 611d83b7a57b4719be45581eb674942ff561de6c
+git -C .tmp/core-1.15/sing-tun checkout --detach FETCH_HEAD
+git init .tmp/core-1.15/sing
+git -C .tmp/core-1.15/sing fetch --depth 1 https://github.com/SagerNet/sing.git 03a6cce64bf744023af9e2691fb11afd405b9061
+git -C .tmp/core-1.15/sing checkout --detach FETCH_HEAD
+python3 scripts/prepare-network-core.py \
+  --sing-box .tmp/core-1.15/sing-box --sing-tun .tmp/core-1.15/sing-tun --sing .tmp/core-1.15/sing \
+  --output .tmp/core-1.15/prepared
+out=release/network-core-1.15-experimental
+for arch in amd64 arm64 mipsle; do
+  for profile in lite full; do
+    sh core/build.sh .tmp/core-1.15/prepared "$out/binaries" "$arch" "$profile"
+  done
+done
 ```
 
-Используется Go **1.26.10**, `CGO_ENABLED=0`, `-trimpath`, `-buildvcs=false`,
-для MIPS — `GOMIPS=softfloat`. В `prepared` сохраняются изменения upstream
-и манифест версий. Файлы `core/overlay` добавляются к закреплённым исходникам;
-они не заменяют полный исходный код sing-box.
+Сборка использует `CGO_ENABLED=0`, `-trimpath`, `-buildvcs=false`, для MIPS
+`GOMIPS=softfloat`. Full включает WireGuard. Подготовка берёт файлы из
+`git archive HEAD`, проверяет SHA, накладывает `core/patches` и копирует
+`core/overlay`. В `build-manifest.json` записываются контрольные суммы
+патчей и файлов overlay.
 
-Рядом с пакетами публикуется архив соответствующих исходников, используемых
-Go-модулей и инструкций автономной сборки. Архив позволяет собрать бинарник
-без загрузки Go-модулей; сам компилятор устанавливается отдельно.
-
-В распакованном архиве повторная упаковка выполняется так (нужен apk-tools 3.0.8):
+## Пакеты и исходники
 
 ```sh
-python3 scripts/build-network-core-packages.py --binaries binaries \
-  --support packaging/stock-support --apk /path/to/apk.static --output packages
+python3 scripts/build-network-core-packages.py --binaries "$out/binaries" \
+  --prepared .tmp/core-1.15/prepared --apk /path/to/apk.static --output "$out"
+python3 scripts/package-network-core-source.py --prepared .tmp/core-1.15/prepared \
+  --cache "$(go env GOMODCACHE)" --packages "$out" \
+  --output "$out/sing-box-1.15.0-alpha.13-obhod.1-source.tar.gz"
 ```
 
-APK собираются с `SOURCE_DATE_EPOCH=0`, IPK используют фиксированные timestamps.
-В IPK список conffiles содержит отдельные файлы, а не каталоги из APK metadata.
-Проверка реальных пакетов из рабочего репозитория:
+Пакеты `obhod-experimental-core-lite` и `obhod-experimental-core-full`
+устанавливают ядра в `/usr/lib/obhod-experimental/<профиль>/sing-box`. У них
+собственные имена, версии и манифест `experimental-packages.json`. Оба профиля
+могут сосуществовать со штатным ядром. Пакеты содержат лицензии и манифест
+сборки, а архив содержит исходники модулей, использованных сборкой. Для
+автономной сборки из архива запустите `sh BUILD.sh arm64 full`.
 
-```sh
-python3 scripts/verify-network-core-packages.py --packages release/network-core5 \
-  --previous release/network-core4 --rollback-packages release/network-core5 --faults
-```
+## Ручное тестирование
 
-Она запускается от root в Linux, требует QEMU и проверенные OpenWrt rootfs
-из системных тестов. Зависимости ядра представлены тестовым пакетом;
-procd hooks не исполняются. Проверяются metadata, payload, версия и функции
-целевого ELF, установка, обновление с .4 и откат. Сетевые проверки выполняются
-отдельно в namespaces; работа физического оборудования этим не подтверждается.
+Для начальной проверки используйте отдельный network namespace и явный путь к
+бинарнику. Проверка ядра из локального пакета и возврат к исходному состоянию
+в тестовой OpenWrt rootfs воспроизводятся командой
+`scripts/verify-experimental-core-packages.py`.
 
-### Откат IPK на ядро .4
+Если стенд проверяет запуск именно через сервис Obhod, на отдельной тестовой
+OpenWrt-системе сохраните версию, SHA-256 и резервную копию
+`/usr/bin/sing-box`, `/etc/obhod` и `/etc/sing-box`. Остановите службу.
+Смонтируйте выбранный экспериментальный бинарник поверх `/usr/bin/sing-box`
+как bind mount в отдельном mount namespace и используйте backend из этой
+ветки. `prepare.uc experimental-1.15` преобразует только рабочую копию
+профиля. После проверки остановите экспериментальный экземпляр. Выход из
+приватного mount namespace снимает подмену, после чего можно проверить
+сохранённый SHA-256 и запустить штатную службу. Для обычного запуска
+используйте установленный штатный путь и штатные приложения.
 
-Для opkg используется отдельный пакет `1.13.21-401`. Его `data.tar.gz`, включая
-бинарник `.4`, побайтово совпадает с опубликованным `1.13.21-400`; изменены
-версия пакета и список conffiles. Старые `-400` и их SHA-256 остаются неизменными.
-Прямая установка старого `-400` поверх `.5` сохраняет известную ошибку opkg.
-В LuCI выбор ядра `.4` на 24.10 устанавливает исправленную revision 401;
-для APK остаётся прежняя `r400`.
-
-Пакеты revision 401 можно воспроизвести из четырёх оригинальных IPK `.4` и
-их `packages.json` (доступны в прежнем релизе):
-
-```sh
-python3 scripts/build-network-core-rollback.py --previous /path/to/original-core4 \
-  --catalog packaging/rollback-base.json --output rollback-packages
-```
-
-Перед операцией установщик сохраняет содержимое, права и владельцев двух
-пакетных конфигураций: `/etc/config/sing-box` и `/etc/sing-box/config.json`.
-Журнал `/etc/obhod/core-package-backup.json` переживает завершение процесса.
-Он восстанавливается при ошибке и перед следующей операцией. Неизвестные
-внешние правки не перезаписываются: операция останавливается, копия остаётся.
-Системная база opkg не редактируется; `--force-overwrite`/`--force-maintainer`
-не используются. SHA-256 установленного ELF проверяется независимо от кода
-возврата opkg. Остальные пользовательские файлы не удаляются.
-
-Для ручной установки после штатной остановки служб используется опубликованный
-`core-opkg.uc` и проверенный по SHA256SUMS пакет в `/tmp`:
-
-```sh
-ucode /tmp/core-opkg.uc /tmp/sing-box-tiny_1.13.21-401_mipsel_24kc.ipk
-# Идемпотентное восстановление конфигурации после прерывания:
-ucode /tmp/core-opkg.uc recover
-```
-
-При конфликте внешних правок сначала сохраните обе версии и разрешите конфликт.
-При неполном ELF после прерывания повторно установите проверенный пакет тем же
-способом. Восстановление конфигурации само по себе не переустанавливает бинарник.
-
-Изменения сетевого ядра и файлы `core/overlay` распространяются по
-**GPL-3.0-or-later**, как upstream. Сценарии сборки и код приложения Обход —
-Apache-2.0. Уведомления upstream сохраняются в соответствующих исходниках.
+Файлы ядра и патчи распространяются на условиях GPL-3.0-or-later. Сценарии
+сборки и код приложения Obhod распространяются на условиях Apache-2.0.

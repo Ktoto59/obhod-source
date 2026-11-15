@@ -1,0 +1,239 @@
+--- a/go.mod
++++ b/go.mod
+@@ -30,3 +30,5 @@
+ 	golang.org/x/time v0.15.0 // indirect
+ 	gopkg.in/yaml.v3 v3.0.1 // indirect
+ )
++
++replace github.com/sagernet/sing => ../sing
+--- a/redirect_linux.go
++++ b/redirect_linux.go
+@@ -37,6 +37,9 @@
+ 	customRedirectListenerFD     func() (int, error)
+ 	customRedirectTransparent    bool
+ 	routeAddressSet              func() ([]netip.Prefix, []netip.Prefix, error)
++	obhodSetAccess               sync.Mutex
++	obhodSetsActive              bool
++	obhodPositiveSet             bool
+ 	bypassRouteTableIndex        int
+ 	bypassRouteAccess            sync.Mutex
+ 	bypassRouteActive            bool
+@@ -152,6 +155,10 @@
+ 		}
+ 		return nil
+ 	}
++	if r.obhodSelective() {
++		_ = r.Close()
++		return E.New("Obhod selective routing requires nftables")
++	}
+ 	r.cleanupIPTables()
+ 	err = r.setupRedirectRoutes()
+ 	if err != nil {
+--- a/redirect_route_vpnservice_stub.go
++++ b/redirect_route_vpnservice_stub.go
+@@ -24,5 +24,5 @@
+ }
+ 
+ func (r *autoRedirect) UpdateRouteAddressSet() error {
+-	return nil
++	return r.updateObhodAddressSets()
+ }
+--- a/redirect_nftables.go
++++ b/redirect_nftables.go
+@@ -19,6 +19,8 @@
+ )
+ 
+ func (r *autoRedirect) setupNFTables() error {
++	r.obhodSetAccess.Lock()
++	defer r.obhodSetAccess.Unlock()
+ 	nft, err := nftables.New()
+ 	if err != nil {
+ 		return E.Cause(err, "create nftables connection")
+@@ -49,6 +51,11 @@
+ 		return E.Cause(err, "create loopback address sets")
+ 	}
+ 
++	if r.obhodSelective() {
++		if err = r.writeObhodAddressSets(nft, table, false); err != nil {
++			return E.Cause(err, "create Obhod address sets")
++		}
++	}
+ 	err = r.nftablesCreatePreMatchChains(nft, table)
+ 	if err != nil {
+ 		return E.Cause(err, "create pre-match chains")
+@@ -284,6 +291,9 @@
+ 		})
+ 	}
+ 
++	if r.obhodSelective() {
++		r.nftablesObhodGuard(nft, table)
++	}
+ 	err = r.configureOpenWRTFirewall4(nft, false)
+ 	if err != nil {
+ 		return E.Cause(err, "configure openwrt firewall4")
+@@ -306,6 +316,7 @@
+ 			r.logger.Error(updateErr)
+ 		}
+ 	})
++	r.obhodSetsActive = r.obhodSelective()
+ 	return nil
+ }
+ 
+@@ -360,6 +371,9 @@
+ }
+ 
+ func (r *autoRedirect) cleanupNFTables() {
++	r.obhodSetAccess.Lock()
++	r.obhodSetsActive = false
++	defer r.obhodSetAccess.Unlock()
+ 	r.unregisterNetworkCallback()
+ 	r.stopDockerFirewallMonitor()
+ 	nft, err := nftables.New()
+@@ -554,10 +568,11 @@
+ 	}
+ 
+ 	queueExpression := func() *expr.Queue {
+-		return &expr.Queue{
+-			Num:  r.effectiveNFQueue(),
+-			Flag: expr.QueueFlagBypass,
+-		}
++		queue := &expr.Queue{Num: r.effectiveNFQueue()}
++		if !r.obhodSelective() {
++			queue.Flag = expr.QueueFlagBypass
++		}
++		return queue
+ 	}
+ 
+ 	nft.AddRule(&nftables.Rule{
+--- a/redirect_nftables_rules.go
++++ b/redirect_nftables_rules.go
+@@ -624,6 +624,7 @@
+ 		}
+ 	}
+ 
++	r.nftablesObhodSelection(nft, table, chain)
+ 	if r.enableIPv4 {
+ 		nftablesCreateExcludeDestinationIPSet(nft, table, chain, 5, "inet4_local_address_set", nftables.TableFamilyIPv4, false)
+ 	}
+@@ -1005,7 +1006,7 @@
+ 				Data:     nftablesIfname("lo"),
+ 			},
+ 		)
+-	} else {
++	} else if !r.obhodSelective() {
+ 		if family == nftables.TableFamilyIPv4 {
+ 			exprs = append(exprs,
+ 				&expr.Payload{
+@@ -1062,6 +1063,13 @@
+ 			Kind: expr.VerdictReturn,
+ 		})
+ 	} else {
++		if r.obhodSelective() {
++			exprs = append(exprs,
++				&expr.Immediate{Register: 1, Data: binaryutil.NativeEndian.PutUint32(r.tunOptions.AutoRedirectInputMark)},
++				&expr.Meta{Key: expr.MetaKeyMARK, Register: 1, SourceRegister: true},
++				&expr.Ct{Key: expr.CtKeyMARK, Register: 1, SourceRegister: true},
++			)
++		}
+ 		exprs = append(exprs,
+ 			&expr.Immediate{
+ 				Register: 1,
+--- a/redirect_route_linux.go
++++ b/redirect_route_linux.go
+@@ -28,9 +28,15 @@
+ 	defer r.redirectRouteAccess.Unlock()
+ 	r.redirectRoutesActive = false
+ 	r.cleanupRedirectRoutesLocked()
+-	r.cleanupStaleRouteRules(redirectRouteRulePriority, 0)
+-	if r.tproxyEnabled() {
+-		r.cleanupStaleRouteRules(redirectRouteRulePriority, r.tunOptions.AutoRedirectTProxyMark)
++	if r.tunOptions.Name == "obhod-tun" {
++		if err = r.cleanupObhodRedirectRoutes(); err != nil {
++			return E.Cause(err, "recover Obhod redirect routes")
++		}
++	} else {
++		r.cleanupStaleRouteRules(redirectRouteRulePriority, 0)
++		if r.tproxyEnabled() {
++			r.cleanupStaleRouteRules(redirectRouteRulePriority, r.tunOptions.AutoRedirectTProxyMark)
++		}
+ 	}
+ 	r.redirectRouteTableIndex = chooseRouteTableIndex(r.tunOptions.IPRoute2TableIndex, r.tproxyRouteTableIndex)
+ 	defer func() {
+@@ -156,6 +162,9 @@
+ 		&netlink.Route{Table: r.redirectRouteTableIndex},
+ 		netlink.RT_FILTER_TABLE)
+ 	for _, route := range routes {
++		if r.tunOptions.Name == "obhod-tun" && !obhodOwnedRedirectRoute(route) {
++			continue
++		}
+ 		_ = netlink.RouteDel(&route)
+ 	}
+ 	if r.enableIPv4 {
+@@ -189,6 +198,9 @@
+ 		netlink.RT_FILTER_TABLE)
+ 	if err != nil {
+ 		return E.Cause(err, "list redirect routes")
++	}
++	if r.tunOptions.Name == "obhod-tun" {
++		currentRoutes = common.Filter(currentRoutes, obhodOwnedRedirectRoute)
+ 	}
+ 	routesToAdd, routesToDelete := calculateRedirectRouteChanges(
+ 		r.redirectRouteTableIndex,
+@@ -206,6 +218,9 @@
+ 	}
+ 	for index := range routesToAdd {
+ 		route := &routesToAdd[index]
++		if r.tunOptions.Name == "obhod-tun" {
++			route.Protocol = obhodRedirectProtocol
++		}
+ 		err = netlink.RouteAppend(route)
+ 		if err != nil {
+ 			return E.Cause(err, "append redirect route ", route)
+--- a/udp_nat.go
++++ b/udp_nat.go
+@@ -333,6 +333,11 @@
+ 		sourceAddr: source.Addr.Unmap(),
+ 		sourcePort: source.Port,
+ 	}
++	if destination.Port == 53 {
++		key.destinationAddr = destination.Addr.Unmap()
++		key.destinationPort = destination.Port
++		return key
++	}
+ 	switch s.mapping {
+ 	case NATMappingEndpointIndependent:
+ 		key.interfaceIndex = s.classify(destination)
+--- a/ping/destination.go
++++ b/ping/destination.go
+@@ -100,9 +100,11 @@
+ 
+ func (d *Destination) loopRead() {
+ 	defer d.Close()
++	received := false
+ 	for {
+ 		deadline := d.lastActive.Load().Add(d.timeout)
+ 		if !time.Now().Before(deadline) {
++			logICMPReadError(d.ctx, d.logger, os.ErrDeadlineExceeded, received)
+ 			return
+ 		}
+ 		err := d.conn.SetReadDeadline(deadline)
+@@ -116,9 +118,7 @@
+ 			if E.IsTimeout(err) {
+ 				continue
+ 			}
+-			if !E.IsClosed(err) {
+-				d.logger.ErrorContext(d.ctx, E.Cause(err, "receive ICMP echo reply"))
+-			}
++			logICMPReadError(d.ctx, d.logger, err, received)
+ 			return
+ 		}
+ 		if !d.destination.Is6() {
+@@ -183,6 +183,8 @@
+ 		err = d.writer.WritePacket(buffer.Bytes())
+ 		if err != nil {
+ 			d.logger.ErrorContext(d.ctx, E.Cause(err, "write ICMP echo reply"))
++		} else {
++			received = true
+ 		}
+ 		buffer.Release()
+ 	}

@@ -6,10 +6,12 @@ const path = require('node:path');
 const net = require('node:net');
 const http = require('node:http');
 const { once } = require('node:events');
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const { generateConfig } = require('../shared/config-generator');
 const { parseProxyUri, parseWireGuardConfig } = require('../shared/profile');
 const binary = process.env.OBHOD_TEST_CORE || path.join(__dirname, '../windows/runtime/sing-box.exe');
+const experimental = fs.existsSync(binary) &&
+  spawnSync(binary, ['obhod-capabilities'], { encoding: 'utf8' }).stdout?.split(/\r?\n/).includes('obhod-experimental-1.15');
 const listen = async server => { server.listen(0, '127.0.0.1'); await once(server, 'listening'); return server.address().port; };
 const close = server => new Promise(resolve => server.close(resolve));
 async function freePort() { const server = net.createServer(); const port = await listen(server); await close(server); return port; }
@@ -44,7 +46,7 @@ function dnsQuery(port, id) {
   });
 }
 
-test('generated failover DNS survives a failed primary and switching TCP-only HTTP tunnels', { skip: !fs.existsSync(binary), timeout: 20000 }, async () => {
+test('generated failover DNS survives a failed primary and switching TCP-only HTTP tunnels', { skip: !fs.existsSync(binary), timeout: 20000 }, async t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'obhod-failover-dns-'));
   const sockets = new Set(), track = socket => { sockets.add(socket); socket.once('close', () => sockets.delete(socket)); };
   const dns = net.createServer(socket => {
@@ -60,6 +62,13 @@ test('generated failover DNS survives a failed primary and switching TCP-only HT
   const dnsPort = await listen(dns);
   const health = http.createServer((_request, response) => { response.writeHead(204); response.end(); });
   const healthPort = await listen(health);
+  let directHits = 0;
+  const directTrap = net.createServer(socket => { directHits++; socket.destroy(); });
+  if (process.env.OBHOD_TEST_DNS_TRAP === '1') {
+    // The namespace owns this address. A direct DNS fallback would reach us.
+    directTrap.listen(53, '8.8.8.8');
+    await once(directTrap, 'listening');
+  }
   const counts = [0, 0], proxySockets = [new Set(), new Set()];
   let backupReady = false;
   const proxies = [0, 1].map(index => {
@@ -96,25 +105,33 @@ test('generated failover DNS survives a failed primary and switching TCP-only HT
     config.inbounds = [{type:'direct', tag:'dns-test', listen:'127.0.0.1', listen_port:port}];
     config.route.rules.unshift({inbound:['dns-test'], action:'hijack-dns'});
     config.dns.rules.unshift({inbound:['dns-test'], action:'route', server:'proxy-dns', disable_cache:true});
+    if (experimental) delete config.dns.independent_cache;
+    config.log = { level: 'warn' };
     const file = path.join(directory, 'config.json'); fs.writeFileSync(file, JSON.stringify(config));
+    const check = spawnSync(binary, ['check', '-c', file], { encoding: 'utf8' });
+    assert.equal(check.status, 0, check.stderr);
     core = spawn(binary, ['run', '-c', file], {windowsHide:true, stdio:'ignore'});
     await waitFor(async () => await selected(controller) === `tunnel-${members[0].id}`);
     assert.equal(await dnsQuery(port, 0x4242), '203.0.113.42'); assert.ok(counts[0] > 0);
     backupReady = true;
+    const failoverStarted = performance.now();
     const closedFirst = close(proxies[0]);
     for (const socket of proxySockets[0]) socket.destroy();
     await closedFirst;
     await waitFor(async () => await selected(controller) === `tunnel-${members[1].id}`);
     assert.equal(await dnsQuery(port, 0x4243), '203.0.113.42'); assert.ok(counts[1] > 0);
+    t.diagnostic(`DNS answered via backup in ${Math.round(performance.now() - failoverStarted)} ms`);
     const closedBackup = close(proxies[1]);
     for (const socket of proxySockets[1]) socket.destroy();
     await closedBackup;
     let answer = null; try { answer = await dnsQuery(port, 0x4244); } catch {}
     assert.equal(answer, null, 'All failed tunnels must not send DNS directly');
+    assert.equal(directHits, 0, 'The direct DNS trap did not receive a connection');
   } finally {
     if (core && core.exitCode === null && core.signalCode === null) { const exited = once(core, 'exit'); core.kill(); await exited; }
     for (const socket of sockets) socket.destroy();
     for (const proxy of proxies) if (proxy.listening) await close(proxy);
+    if (directTrap.listening) await close(directTrap);
     await close(dns); await close(health); fs.rmSync(directory, {recursive:true, force:true});
   }
 });

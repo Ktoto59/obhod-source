@@ -16,6 +16,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.request
 
 
 def run(*args, check=True):
@@ -86,7 +87,9 @@ def main(binary):
     # Fail before any mutation unless the caller has isolated the router netns.
     assert os.readlink('/proc/self/ns/net') != os.readlink('/proc/1/ns/net'), 'Run under unshare -n'
     binary = str(Path(binary).resolve())
-    assert 'kernel-route-set-v1' in run(binary, 'obhod-capabilities').splitlines()
+    capabilities = run(binary, 'obhod-capabilities').splitlines()
+    assert 'kernel-route-set-v1' in capabilities
+    native_stack = 'sing-tun-go-stack-v1' in capabilities
     names = [f'obhod-kr-{os.getpid()}-{part}' for part in ['client', 'server']]
     client, server = names
     children = []
@@ -162,10 +165,25 @@ def main(binary):
                             {'type': 'remote', 'tag': 'remote', 'format': 'source', 'url': 'http://192.0.2.2:18080/selected.json', 'update_interval': '1s'},
                             {'type': 'remote', 'tag': 'binary', 'format': 'binary', 'url': 'http://192.0.2.2:18080/selected.srs'}]}}
                 config['experimental'] = {'cache_file': {'enabled': True, 'path': str(temp/f'cache-{ipv6}.db'), 'store_fakeip': True}}
+                if native_stack:
+                    # An explicit legacy stack disables the feature under test.
+                    del config['inbounds'][0]['stack']
+                    config['experimental']['clash_api'] = {'external_controller': '127.0.0.1:2081'}
+                    for rule_set in config['route']['rule_set']:
+                        if rule_set['type'] == 'remote':
+                            rule_set['http_client'] = {'domain_resolver': 'real'}
                 file = temp/'config.json'; file.write_text(json.dumps(config))
+                if native_stack:
+                    run('ip', 'route', 'add', 'unreachable', '192.0.2.128/25', 'table', '60001')
+                    run('ip', 'rule', 'add', 'priority', '1', 'lookup', '60001')
                 log = open(temp/'core.log', 'w+')
                 core = subprocess.Popen([binary, 'run', '-c', str(file)], stdout=log, stderr=log); children.append(core)
                 wait_core(core, log)
+                if native_stack:
+                    assert 'lookup 60001' in run('ip', 'rule'), 'Start deleted a foreign policy rule'
+                    assert 'unreachable 192.0.2.128/25' in run('ip', 'route', 'show', 'table', '60001')
+                    run('ip', 'rule', 'del', 'priority', '1', 'lookup', '60001')
+                    run('ip', 'route', 'del', 'unreachable', '192.0.2.128/25', 'table', '60001')
                 output = queued('output_prematch')
                 for protocol in ['tcp', 'udp']:
                     assert probe(protocol, '198.51.100.2') == '192.0.2.1'
@@ -181,6 +199,10 @@ def main(binary):
                     assert request(protocol, '2001:db8:100::2') == 'fd00:10::2'
                 assert queued() == before, 'Direct first packets must never reach NFQUEUE'
                 for protocol in ['tcp', 'udp']:
+                    assert request(protocol, '8.8.8.8', 'plain.example') == '203.0.113.2'
+                if native_stack:
+                    assert queued() == before, 'DNS must reach the native hijack without using NFQUEUE'
+                for protocol in ['tcp', 'udp']:
                     assert request(protocol, '203.0.113.2') == '192.0.2.1'
                     assert request(protocol, '198.51.100.130') == '192.0.2.1'
                     assert request(protocol, '198.51.100.200') == '192.0.2.1'
@@ -195,6 +217,22 @@ def main(binary):
                         # A restored domain may resolve to IPv4 or IPv6 upstream.
                         assert request(protocol, fake6) in ['fd00:20::1', '192.0.2.1']
                 assert queued() > before, 'Selected traffic exercises the actual queue path'
+                before_ping = queued()
+                run('ip', 'netns', 'exec', client, 'ping', '-c', '1', '-W', '2', '198.51.100.2')
+                assert queued() == before_ping, 'Ordinary ICMP should not reach NFQUEUE'
+                run('ip', 'netns', 'exec', client, 'ping', '-c', '1', '-W', '2', '203.0.113.2')
+                assert queued() > before_ping, 'Selected ICMP must exercise the queue path'
+                if native_stack:
+                    with urllib.request.urlopen(urllib.request.Request(
+                        'http://127.0.0.1:2081/cache/dns/flush', method='POST'), timeout=2) as response:
+                        assert response.status == 204
+                    assert request('udp', '8.8.8.8', 'selected.example') == fake
+                    run('ip', 'addr', 'add', '192.0.2.9/24', 'dev', 'wan')
+                    run('ip', 'route', 'replace', '203.0.113.0/24', 'via', '192.0.2.2', 'src', '192.0.2.9')
+                    assert request('tcp', '203.0.113.2') == '192.0.2.9'
+                    assert request('udp', '203.0.113.2') == '192.0.2.9'
+                    run('ip', 'route', 'replace', '203.0.113.0/24', 'via', '192.0.2.2')
+                    run('ip', 'addr', 'del', '192.0.2.9/24', 'dev', 'wan')
                 # Even a routable stale FakeIP must fail instead of leaking to
                 # the direct outbound. The server owns it to catch that error.
                 for protocol in ['tcp', 'udp']:
@@ -235,6 +273,13 @@ def main(binary):
                     # instance must replace its stale table and restore sets,
                     # TUN routing and cached FakeIP without broad interception.
                     core.kill(); core.wait(timeout=5)
+                    if native_stack:
+                        for protocol in ['tcp', 'udp']:
+                            selected = subprocess.run(['ip', 'netns', 'exec', client, sys.executable,
+                                                       script, '--probe', protocol, '198.51.100.2', '', 'A'],
+                                                      capture_output=True, timeout=8)
+                            assert selected.returncode != 0, 'Selected traffic escaped after SIGKILL'
+                            assert request(protocol, '198.51.100.130') == '10.10.0.2'
                     offset = os.fstat(log.fileno()).st_size
                     core = subprocess.Popen([binary, 'run', '-c', str(file)], stdout=log, stderr=log); children.append(core)
                     wait_core(core, log, offset)

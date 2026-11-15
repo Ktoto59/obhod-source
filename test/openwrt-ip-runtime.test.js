@@ -6,10 +6,12 @@ const path = require('node:path');
 const net = require('node:net');
 const http = require('node:http');
 const { once } = require('node:events');
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const { parseProxyUri } = require('../shared/profile');
 const { defaultRouterProfile, generateRouterConfig } = require('../openwrt/lib/config');
-const binary = path.join(__dirname, '../windows/runtime/sing-box.exe');
+const binary = process.env.OBHOD_TEST_CORE || path.join(__dirname, '../windows/runtime/sing-box.exe');
+const experimental = fs.existsSync(binary) &&
+  spawnSync(binary, ['obhod-capabilities'], { encoding: 'utf8' }).stdout?.split(/\r?\n/).includes('obhod-experimental-1.15');
 const listen = async server => { server.listen(0, '127.0.0.1'); await once(server, 'listening'); return server.address().port; };
 
 test('selected IP supports server-first TCP without the old sniff delay', { skip: !fs.existsSync(binary), timeout: 20000 }, async t => {
@@ -34,6 +36,7 @@ test('selected IP supports server-first TCP without the old sniff delay', { skip
     profile.routing.activeTunnelId = profile.tunnels[0].id;
     profile.routing.localLists = [{ id: 'ip', name: 'IP', enabled: true, domains: [], cidrs: ['192.0.2.0/24'] }];
     const config = generateRouterConfig(profile); config.experimental = {}; config.log = { level: 'fatal' };
+    if (experimental) delete config.dns.independent_cache;
     config.inbounds = [{ type: 'direct', tag: 'fixture', listen: '127.0.0.1', listen_port: port, override_address: '192.0.2.55', override_port: targetPort }];
     if (legacy) {
       const sniff = config.route.rules.findIndex(r => r.action === 'sniff');
