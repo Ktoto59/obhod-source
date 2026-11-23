@@ -28,7 +28,12 @@ esac
 capabilities=$("$core" obhod-capabilities 2>/dev/null) || capabilities=
 mode=
 if printf '%s\n' "$capabilities" | grep -qx obhod-experimental-1.15; then mode=experimental-1.15; fi
-ucode "$lib/prepare.uc" "$mode" "$state" "$work" >/dev/null 2>&1 ||
+rule_cache=
+if [ "$mode" = experimental-1.15 ] && printf '%s\n' "$capabilities" | grep -qx obhod-rule-set-start-v1; then
+    rule_cache="$work/rule-set-cache.db"
+    if [ "$1" = prepare ]; then rule_cache=/etc/obhod/rule-set-cache.db; fi
+fi
+ucode "$lib/prepare.uc" "$mode" "$state" "$work" "$rule_cache" >/dev/null 2>&1 ||
     fail 'Не удалось подготовить граф сохранённого профиля. Проверьте структуру конфигурации и совместимость ядра.'
 ucode "$lib/kernel-route.uc" "$work/config.json" >/dev/null 2>&1 ||
     fail 'Не удалось подготовить правила отбора трафика.'
@@ -68,7 +73,7 @@ fi
 # OpenWrt recreates /var/run at boot. Restore an optional rule-set-only cache
 # before the core starts, without replacing the live FakeIP database.
 seed=/etc/obhod/rule-set-cache.db
-if [ "$1" = prepare ] && [ "$mode" = experimental-1.15 ] &&
+if [ "$1" = prepare ] && [ "$mode" = experimental-1.15 ] && [ -z "$rule_cache" ] &&
     [ -s "$seed" ] && [ ! -e "$work/dns-cache.db" ]; then
     if ! { cp "$seed" "$work/dns-cache.boot" && mv "$work/dns-cache.boot" "$work/dns-cache.db"; }; then
         rm -f "$work/dns-cache.boot"

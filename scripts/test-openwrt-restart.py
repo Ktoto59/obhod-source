@@ -25,6 +25,7 @@ class Restart(unittest.TestCase):
         self.write('etc/config/dhcp', "config dnsmasq 'main'\n option noresolv '0'\n list server '192.0.2.53'\n option cachesize '150'\n")
         self.write('etc/config/obhod', "config obhod 'main'\n option enabled '1'\n")
         self.write('etc/obhod/settings.json', '{"options":{"manageDns":true}}')
+        self.write('var/run/obhod/bootstrap.json', '{"inbounds":[{"listen_port":12061}]}')
         self.write('etc/init.d/dnsmasq', '#!/bin/sh\necho restart >> /tmp/dns-restarts\n[ ! -f /tmp/fail-restart ]\n')
         self.addCleanup(self.kill_watcher)
 
@@ -95,9 +96,23 @@ esac
             self.assertEqual(self.run_in('/sbin/uci', 'get', 'obhod.main.enabled').stdout.strip(), initial)
         self.dns('restore')
 
+    def test_boot_leaves_initial_start_and_retries_to_procd(self):
+        self.fixture()
+        self.write('etc/init.d/obhod', '''#!/bin/sh
+echo "$OBHOD_CONTROL:$1" >> /tmp/boot-requests
+[ "$OBHOD_CONTROL:$1" = 1:start ]
+''')
+        self.run_in('/usr/libexec/obhod/control', 'service', 'boot').check_returncode()
+        requests = self.lab / 'tmp/boot-requests'
+        self.assertEqual(requests.read_text().splitlines(), ['1:start'])
+        self.run_in('/sbin/uci', 'set', 'obhod.main.enabled=0').check_returncode()
+        self.run_in('/usr/libexec/obhod/control', 'service', 'boot').check_returncode()
+        self.assertEqual(requests.read_text().splitlines(), ['1:start'])
+
     def test_worker_exit_and_respawn_keep_dns_then_explicit_stop_restores(self):
         self.fixture()
-        self.write('proc/net/tcp', ' 0: 0100007F:041D 00000000:0000 0A \n')
+        self.write('proc/net/tcp', ''.join(
+            f' 0: 0100007F:{port:04X} 00000000:0000 0A \n' for port in [1053, 1155, 12061]))
         self.write('usr/bin/sing-box', '#!/bin/sh\nexec sleep 60\n')
         self.write('usr/libexec/obhod/monitor', '#!/bin/sh\nexec sleep 60\n')
         first = self.spawn_run()
@@ -201,7 +216,8 @@ flock 9; flock 1000
 
     def test_real_rc_common_stop_drains_late_starting_apply_and_watchdog(self):
         self.fixture()
-        self.write('proc/net/tcp', ' 0: 0100007F:041D 00000000:0000 0A \n')
+        self.write('proc/net/tcp', ''.join(
+            f' 0: 0100007F:{port:04X} 00000000:0000 0A \n' for port in [1053, 1155, 12061]))
         self.write('usr/bin/sing-box', '#!/bin/sh\nexec sleep 60\n')
         self.write('usr/libexec/obhod/monitor', '#!/bin/sh\nexec sleep 60\n')
         first = self.spawn_run()

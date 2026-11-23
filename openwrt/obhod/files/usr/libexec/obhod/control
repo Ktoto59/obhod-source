@@ -180,7 +180,9 @@ service() {
 		stop) "$0" stop ;;
 		shutdown) stop_and_wait ;;
 		boot)
-			if [ "$(uci -q get obhod.main.enabled)" = 1 ]; then "$0" start
+			if [ "$(uci -q get obhod.main.enabled)" = 1 ]; then
+				# Keep procd's respawn budget when WAN is late during boot.
+				OBHOD_CONTROL=1 /etc/init.d/obhod start
 			else /usr/libexec/obhod/dns restore; fi
 			;;
 		*) "$0" start ;;

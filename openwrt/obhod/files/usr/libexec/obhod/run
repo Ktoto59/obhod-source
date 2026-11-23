@@ -54,7 +54,12 @@ fi
 /usr/bin/sing-box run -c "$RUN/config.json" > "$RUN/log.pipe" 2>&1 &
 child=$!
 attempt=0
-while [ "$attempt" -lt 10 ]; do
+startup_wait=10
+# The experimental core bounds cold URLTest rule downloads to 16 seconds.
+if jsonfilter -i "$RUN/config.json" -e '@.route.rule_set[*].obhod_try_group' | grep -qx true; then
+	startup_wait=20
+fi
+while [ "$attempt" -lt "$startup_wait" ]; do
 	sleep 1
 	kill -0 "$child" 2>/dev/null || exit 1
 	# Announce readiness only after the encrypted DNS path can accept queries.
@@ -68,7 +73,7 @@ while [ "$attempt" -lt 10 ]; do
 	[ "$listening" = 1 ] && break
 	attempt=$((attempt + 1))
 done
-[ "$attempt" -lt 10 ] || exit 1
+[ "$attempt" -lt "$startup_wait" ] || exit 1
 /usr/libexec/obhod/dns ready "$$" || {
 	printf '%s\n' 'Не удалось настроить DNS. Проверьте dnsmasq и сохранённую копию DNS.' > "$RUN/error"
 	exit 1

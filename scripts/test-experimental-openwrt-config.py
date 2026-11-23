@@ -51,6 +51,7 @@ def config_diagnostic(lab):
 
 
 def check(baseline, experimental, tools):
+    startup_failover = 'obhod-rule-set-start-v1' in run(experimental, 'obhod-capabilities').splitlines()
     fixtures = json.loads(run('node', '-e', GENERATE))
     legacy = ROOT / '.tmp/openwrt-legacy-settings.json'
     run('node', str(ROOT / 'scripts/check-openwrt-config.js'))
@@ -161,9 +162,17 @@ def check(baseline, experimental, tools):
                 assert old['dns']['servers'] == new['dns']['servers']
                 assert 'independent_cache' not in new['dns']
                 assert all('stack' not in i for i in new['inbounds'])
+                has_remote = any(rule['type'] == 'remote' for rule in new['route']['rule_set'])
+                assert 'obhod_rule_set_path' not in old['experimental']['cache_file']
+                if startup_failover and has_remote:
+                    assert new['experimental']['cache_file']['obhod_rule_set_path'] == '/etc/obhod/rule-set-cache.db'
+                    assert not (lab / 'etc/obhod/rule-set-cache.db').exists()
+                auto_groups = {out['tag'] for out in new['outbounds'] if out['type'] == 'urltest'}
                 for old_set, new_set in zip(old['route']['rule_set'], new['route']['rule_set']):
                     if old_set['type'] == 'remote':
                         assert 'download_detour' not in new_set and new_set['http_client']
+                        assert new_set.get('obhod_try_group', False) == (
+                            startup_failover and new_set['http_client'].get('detour') in auto_groups)
                         if old_set.get('download_detour'):
                             assert new_set['http_client']['detour'] == old_set['download_detour']
                 print(f"PASS {manager}: IPv6={fixture['options']['ipv6']}, "

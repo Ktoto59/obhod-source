@@ -332,3 +332,231 @@
  		return
  	}
  	r.searchProcessInfo(ctx, &metadata)
+diff --git a/adapter/http.go b/adapter/http.go
+index 3de4f1c..1abe258 100644
+--- a/adapter/http.go
++++ b/adapter/http.go
+@@ -4,6 +4,7 @@ import (
+ 	"context"
+ 	"net/http"
+ 	"sync"
++	"time"
+ 
+ 	"github.com/sagernet/sing-box/option"
+ 	"github.com/sagernet/sing/common/logger"
+@@ -22,12 +23,13 @@ type HTTPClientManager interface {
+ }
+ 
+ type HTTPStartContext struct {
++	StartedAt  time.Time
+ 	access     sync.Mutex
+ 	transports []HTTPTransport
+ }
+ 
+ func NewHTTPStartContext() *HTTPStartContext {
+-	return &HTTPStartContext{}
++	return &HTTPStartContext{StartedAt: time.Now()}
+ }
+ 
+ func (c *HTTPStartContext) Register(transport HTTPTransport) {
+diff --git a/experimental/cachefile/cache.go b/experimental/cachefile/cache.go
+index 2cbfd9e..d740511 100644
+--- a/experimental/cachefile/cache.go
++++ b/experimental/cachefile/cache.go
+@@ -1,6 +1,7 @@
+ package cachefile
+ 
+ import (
++	"bytes"
+ 	"context"
+ 	"errors"
+ 	"os"
+@@ -48,6 +49,8 @@ type CacheFile struct {
+ 	ctx               context.Context
+ 	logger            logger.Logger
+ 	path              string
++	obhodRuleSetPath  string
++	ruleSets          *CacheFile
+ 	cacheID           []byte
+ 	cacheIDText       string
+ 	storeFakeIP       bool
+@@ -108,20 +111,21 @@ func New(ctx context.Context, logger logger.Logger, options option.CacheFileOpti
+ 	flushTimer := time.NewTimer(time.Hour)
+ 	flushTimer.Stop()
+ 	return &CacheFile{
+-		ctx:           ctx,
+-		logger:        logger,
+-		path:          filemanager.BasePath(ctx, path),
+-		cacheID:       cacheIDBytes,
+-		cacheIDText:   options.CacheID,
+-		storeFakeIP:   options.StoreFakeIP,
+-		storeRDRC:     storeRDRC,
+-		storeDNS:      options.StoreDNS,
+-		rdrcTimeout:   rdrcTimeout,
+-		bufferSize:    bufferSize,
+-		flushInterval: time.Duration(options.FlushInterval),
+-		pending:       newPendingWrites(),
+-		flushTimer:    flushTimer,
+-		flushSignal:   make(chan struct{}, 1),
++		ctx:              ctx,
++		logger:           logger,
++		path:             filemanager.BasePath(ctx, path),
++		obhodRuleSetPath: options.ObhodRuleSetPath,
++		cacheID:          cacheIDBytes,
++		cacheIDText:      options.CacheID,
++		storeFakeIP:      options.StoreFakeIP,
++		storeRDRC:        storeRDRC,
++		storeDNS:         options.StoreDNS,
++		rdrcTimeout:      rdrcTimeout,
++		bufferSize:       bufferSize,
++		flushInterval:    time.Duration(options.FlushInterval),
++		pending:          newPendingWrites(),
++		flushTimer:       flushTimer,
++		flushSignal:      make(chan struct{}, 1),
+ 	}
+ }
+ 
+@@ -160,6 +164,19 @@ func (c *CacheFile) Start(stage adapter.StartStage, scope *adapter.Scope) error
+ 			c.Flush()
+ 			return nil
+ 		})
++		if c.obhodRuleSetPath != "" {
++			rules := New(c.ctx, c.logger, option.CacheFileOptions{
++				Path: c.obhodRuleSetPath, CacheID: c.cacheIDText,
++			})
++			if rules.path != c.path {
++				if err := rules.start(); err != nil {
++					c.logger.Warn("open persistent rule-set cache: ", err)
++				} else {
++					c.ruleSets = rules
++					scope.Add(func() error { return rules.database().Close() })
++				}
++			}
++		}
+ 		var flushGroup sync.WaitGroup
+ 		scope.Add(func() error {
+ 			flushGroup.Wait()
+@@ -466,6 +483,17 @@ func (c *CacheFile) LoadRuleSet(tag string) *adapter.SavedBinary {
+ 		}
+ 		return savedSet.UnmarshalBinary(setBinary)
+ 	})
++	if c.ruleSets != nil {
++		durable := c.ruleSets.LoadRuleSet(tag)
++		if durable != nil && (err != nil || durable.LastUpdated.After(savedSet.LastUpdated)) {
++			return durable
++		}
++		if err == nil && (durable == nil || !sameRuleSet(durable, &savedSet)) {
++			if writeErr := c.ruleSets.saveRuleSet(tag, &savedSet); writeErr != nil {
++				c.logger.Warn("migrate rule-set cache: ", writeErr)
++			}
++		}
++	}
+ 	if err != nil {
+ 		return nil
+ 	}
+@@ -473,6 +501,25 @@ func (c *CacheFile) LoadRuleSet(tag string) *adapter.SavedBinary {
+ }
+ 
+ func (c *CacheFile) SaveRuleSet(tag string, set *adapter.SavedBinary) error {
++	// Keep the newest entry in RAM even when a write to flash fails.
++	if err := c.saveRuleSet(tag, set); err != nil {
++		return err
++	}
++	if c.ruleSets == nil {
++		return nil
++	}
++	previous := c.ruleSets.LoadRuleSet(tag)
++	if previous != nil && sameRuleSet(previous, set) {
++		return nil
++	}
++	return c.ruleSets.saveRuleSet(tag, set)
++}
++
++func sameRuleSet(a, b *adapter.SavedBinary) bool {
++	return a.LastEtag == b.LastEtag && bytes.Equal(a.URLHash, b.URLHash) && bytes.Equal(a.Content, b.Content)
++}
++
++func (c *CacheFile) saveRuleSet(tag string, set *adapter.SavedBinary) error {
+ 	return c.batch(func(t *bbolt.Tx) error {
+ 		bucket, err := c.createBucket(t, bucketRuleSet)
+ 		if err != nil {
+diff --git a/option/experimental.go b/option/experimental.go
+index bf144ad..58d99b3 100644
+--- a/option/experimental.go
++++ b/option/experimental.go
+@@ -13,13 +13,14 @@ type ExperimentalOptions struct {
+ }
+ 
+ type CacheFileOptions struct {
+-	Enabled       bool                     `json:"enabled,omitempty"`
+-	Path          string                   `json:"path,omitempty"`
+-	CacheID       string                   `json:"cache_id,omitempty"`
+-	StoreFakeIP   bool                     `json:"store_fakeip,omitempty"`
+-	StoreDNS      bool                     `json:"store_dns,omitempty"`
+-	BufferSize    *byteformats.MemoryBytes `json:"buffer_size,omitempty"`
+-	FlushInterval badoption.Duration       `json:"flush_interval,omitempty"`
++	Enabled          bool                     `json:"enabled,omitempty"`
++	Path             string                   `json:"path,omitempty"`
++	ObhodRuleSetPath string                   `json:"obhod_rule_set_path,omitempty"`
++	CacheID          string                   `json:"cache_id,omitempty"`
++	StoreFakeIP      bool                     `json:"store_fakeip,omitempty"`
++	StoreDNS         bool                     `json:"store_dns,omitempty"`
++	BufferSize       *byteformats.MemoryBytes `json:"buffer_size,omitempty"`
++	FlushInterval    badoption.Duration       `json:"flush_interval,omitempty"`
+ 
+ 	// Deprecated: replaced by store_dns
+ 	StoreRDRC bool `json:"store_rdrc,omitempty" schema:"omit"`
+diff --git a/option/rule_set.go b/option/rule_set.go
+index 69837a8..9f093fd 100644
+--- a/option/rule_set.go
++++ b/option/rule_set.go
+@@ -178,6 +178,7 @@ type LocalRuleSet struct {
+ }
+ 
+ type RemoteRuleSet struct {
++	ObhodTryGroup  bool               `json:"obhod_try_group,omitempty"`
+ 	URL            string             `json:"url"`
+ 	InitialPath    string             `json:"initial_path,omitempty"`
+ 	HTTPClient     *HTTPClientOptions `json:"http_client,omitempty"`
+diff --git a/route/rule/rule_set_remote.go b/route/rule/rule_set_remote.go
+index 5d694d8..7aaadf9 100644
+--- a/route/rule/rule_set_remote.go
++++ b/route/rule/rule_set_remote.go
+@@ -130,7 +130,7 @@ func (s *RemoteRuleSet) StartContext(ctx context.Context, startContext *adapter.
+ 		}
+ 	}
+ 	if s.lastUpdated.IsZero() && !loadedFromInitialPath {
+-		err = s.fetch(ctx, true)
++		err = s.fetchInitial(ctx, startContext)
+ 		if err != nil {
+ 			return E.Cause(err, "initial rule-set: ", s.tag)
+ 		}
+@@ -279,13 +279,15 @@ func (s *RemoteRuleSet) fetch(ctx context.Context, isStart bool) error {
+ 	if err != nil {
+ 		return err
+ 	}
+-	eTagHeader := response.Header.Get("Etag")
+-	if eTagHeader != "" {
+-		s.lastEtag = eTagHeader
+-	}
++	s.saveFetched(content, response.Header.Get("ETag"))
++	return nil
++}
++
++func (s *RemoteRuleSet) saveFetched(content []byte, etag string) {
++	s.lastEtag = etag
+ 	s.lastUpdated = time.Now()
+ 	if s.cacheFile != nil {
+-		err = s.cacheFile.SaveRuleSet(s.tag, &adapter.SavedBinary{
++		err := s.cacheFile.SaveRuleSet(s.tag, &adapter.SavedBinary{
+ 			LastUpdated: s.lastUpdated,
+ 			Content:     content,
+ 			LastEtag:    s.lastEtag,
+@@ -296,7 +298,6 @@ func (s *RemoteRuleSet) fetch(ctx context.Context, isStart bool) error {
+ 		}
+ 	}
+ 	s.logger.Info("updated rule-set ", s.tag)
+-	return nil
+ }
+ 
+ func (s *RemoteRuleSet) resolveTransport() (adapter.HTTPTransport, error) {

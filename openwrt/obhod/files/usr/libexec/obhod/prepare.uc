@@ -183,4 +183,17 @@ config.route.rules = filter(config.route.rules, r => {
     push(terminalIPs, key); return true;
 });
 if (ARGV[0] == 'experimental-1.15') migrateExperimental115(config);
+if (ARGV[3]) {
+    let remoteSets = filter(config.route.rule_set || [], set => set.type == 'remote');
+    if (length(remoteSets)) {
+        config.experimental ||= {};
+        config.experimental.cache_file ||= { path: root + '/dns-cache.db' };
+        config.experimental.cache_file.enabled = true;
+        config.experimental.cache_file.obhod_rule_set_path = ARGV[3];
+    }
+    let groups = map(filter(config.outbounds || [], outbound => outbound.type == 'urltest'), group => group.tag);
+    for (let set in remoteSets)
+        if (set.http_client?.detour && index(groups, set.http_client.detour) >= 0)
+            set.obhod_try_group = true;
+}
 if (!writefile(root + '/config.json', sprintf('%J\n', config))) die('Cannot write runtime DNS configuration');
