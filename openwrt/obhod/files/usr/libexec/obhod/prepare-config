@@ -64,3 +64,14 @@ fi
 # This router also runs a separate encrypted bootstrap graph.
 "$core" check -c "$work/bootstrap.json" >/dev/null 2>&1 ||
     fail 'Ядро отклонило конфигурацию Bootstrap DoH.'
+
+# OpenWrt recreates /var/run at boot. Restore an optional rule-set-only cache
+# before the core starts, without replacing the live FakeIP database.
+seed=/etc/obhod/rule-set-cache.db
+if [ "$1" = prepare ] && [ "$mode" = experimental-1.15 ] &&
+    [ -s "$seed" ] && [ ! -e "$work/dns-cache.db" ]; then
+    if ! { cp "$seed" "$work/dns-cache.boot" && mv "$work/dns-cache.boot" "$work/dns-cache.db"; }; then
+        rm -f "$work/dns-cache.boot"
+        logger -t obhod 'Не удалось загрузить стартовый кэш правил.'
+    fi
+fi
