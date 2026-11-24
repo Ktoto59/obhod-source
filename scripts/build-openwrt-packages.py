@@ -19,7 +19,8 @@ import tempfile
 ROOT = Path(__file__).resolve().parent.parent
 VERSION = '0.1.20'
 DEPS = ['firewall4', 'kmod-tun', 'kmod-nft-tproxy', 'kmod-nft-queue',
-        'uclient-fetch', 'ca-bundle', 'jshn', 'jsonfilter', 'rpcd', 'rpcd-mod-file', 'ucode', 'ucode-mod-fs']
+        'uclient-fetch', 'curl', 'ca-bundle', 'jshn', 'jsonfilter', 'rpcd', 'rpcd-mod-file',
+        'ucode', 'ucode-mod-fs', 'ucode-mod-socket']
 POST = '''#!/bin/sh
 [ -n "$IPKG_INSTROOT" ] && exit 0
 /etc/init.d/obhod enable
@@ -76,17 +77,17 @@ def tar_bytes(files, extra_dirs=()):
     return gzip.compress(output.getvalue(), mtime=0)
 
 
-def build(package, destination, apk):
+def build(package, destination, apk, revision=1):
     files = source_files(package)
     deps = DEPS if package == 'obhod' else ['obhod', 'luci-base', 'rpcd-mod-file']
     description = 'Obhod selective routing service' if package == 'obhod' else 'LuCI interface for Obhod'
     post = POST if package == 'obhod' else LUCI_POST
-    control = f'Package: {package}\nVersion: {VERSION}-1\nArchitecture: all\nMaintainer: Obhod contributors\nLicense: Apache-2.0\nSection: net\nDepends: {", ".join(deps)}\nDescription: {description}\n'
+    control = f'Package: {package}\nVersion: {VERSION}-{revision}\nArchitecture: all\nMaintainer: Obhod contributors\nLicense: Apache-2.0\nSection: net\nDepends: {", ".join(deps)}\nDescription: {description}\n'
     controls = {'control': (control.encode(), 0o644), 'postinst': (post.encode(), 0o755)}
     if package == 'obhod':
         controls['prerm'] = (PRE_REMOVE.encode(), 0o755)
         controls['conffiles'] = (b'/etc/config/obhod\n', 0o644)
-    ipk = destination / f'{package}_{VERSION}-1_all.ipk'
+    ipk = destination / f'{package}_{VERSION}-{revision}_all.ipk'
     # OpenWrt's opkg accepts a tar container with the three standard members.
     ipk.write_bytes(tar_bytes({'debian-binary': (b'2.0\n', 0o644),
                                'control.tar.gz': (tar_bytes(controls), 0o644),
@@ -105,11 +106,11 @@ def build(package, destination, apk):
         post_path.write_text(post)
         pre_path = Path(temporary) / 'pre-remove'
         pre_path.write_text(PRE_REMOVE)
-        args = [apk, 'mkpkg', '--info', f'name:{package}', '--info', f'version:{VERSION}-r1',
+        args = [apk, 'mkpkg', '--info', f'name:{package}', '--info', f'version:{VERSION}-r{revision}',
                 '--info', 'arch:noarch', '--info', 'license:Apache-2.0',
                 '--info', f'description:{description}', '--info', 'depends:' + ' '.join(deps),
                 '--files', str(stage), '--script', f'post-install:{post_path}',
-                '--script', f'post-upgrade:{post_path}', '--output', str(destination / f'{package}-{VERSION}-r1.apk')]
+                '--script', f'post-upgrade:{post_path}', '--output', str(destination / f'{package}-{VERSION}-r{revision}.apk')]
         if package == 'obhod':
             args += ['--script', f'pre-deinstall:{pre_path}']
         subprocess.run(args, check=True, env={**os.environ, 'SOURCE_DATE_EPOCH': '0'})
@@ -119,13 +120,20 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--output', default=str(ROOT / 'release/openwrt'))
     parser.add_argument('--apk', default='apk')
+    parser.add_argument('--packages-only', action='store_true', help='Build the APK and IPK pairs for manual installation')
+    parser.add_argument('--revision', type=int, default=1, help='Package revision for manual installation')
     args = parser.parse_args()
+    if args.revision < 1 or (args.revision != 1 and not args.packages_only):
+        parser.error('use a positive revision and --packages-only for revisions other than 1')
     if (ROOT/'openwrt/obhod/files/usr/share/obhod/version').read_text().strip() != VERSION:
         raise ValueError('OpenWrt app version file does not match package version')
     destination = Path(args.output).resolve()
     destination.mkdir(parents=True, exist_ok=True)
     for package in ['obhod', 'luci-app-obhod']:
-        build(package, destination, args.apk)
+        build(package, destination, args.apk, args.revision)
+    if args.packages_only:
+        print(f'Built OpenWrt packages {VERSION}, revision {args.revision}, in {destination}')
+        return
     for source, name in [(ROOT / 'openwrt/install.sh', 'install.sh'),
                          (ROOT / 'openwrt/obhod/files/usr/libexec/obhod/installer-plan.uc', 'installer-plan.uc'),
                          (ROOT / 'openwrt/obhod/files/usr/libexec/obhod/package-lib.sh', 'package-lib.sh'),

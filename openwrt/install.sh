@@ -184,8 +184,8 @@ work=$(mktemp -d /tmp/obhod-install.XXXXXX) || die 'Не удалось созд
 compat_catalog="$directory/core-catalog.json"
 compat_selector="$directory/core-select.uc"
 select_compat_core
-dependencies="$core firewall4 kmod-tun kmod-nft-tproxy kmod-nft-queue ca-bundle uclient-fetch jshn jsonfilter rpcd rpcd-mod-file ucode ucode-mod-fs ucode-mod-socket luci-base"
-if [ "$compat" = 1 ]; then dependencies="firewall4 kmod-tun kmod-inet-diag libc kmod-nft-tproxy kmod-nft-queue ca-bundle uclient-fetch jshn jsonfilter rpcd rpcd-mod-file ucode ucode-mod-fs ucode-mod-socket luci-base"; fi
+dependencies="firewall4 kmod-tun kmod-nft-tproxy kmod-nft-queue ca-bundle curl uclient-fetch jshn jsonfilter rpcd rpcd-mod-file ucode ucode-mod-fs ucode-mod-socket luci-base"
+if [ "$compat" = 1 ]; then dependencies="$dependencies kmod-inet-diag libc"; else dependencies="$core $dependencies"; fi
 echo 'Обновляем индексы подписанных репозиториев и рассчитываем зависимости…'
 if [ "$manager" = apk ]; then
 	apk update || die 'Не удалось обновить индексы APK.'

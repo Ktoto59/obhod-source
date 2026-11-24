@@ -360,7 +360,7 @@ index 3de4f1c..1abe258 100644
  
  func (c *HTTPStartContext) Register(transport HTTPTransport) {
 diff --git a/experimental/cachefile/cache.go b/experimental/cachefile/cache.go
-index 2cbfd9e..d740511 100644
+index 2cbfd9e..39e1d7a 100644
 --- a/experimental/cachefile/cache.go
 +++ b/experimental/cachefile/cache.go
 @@ -1,6 +1,7 @@
@@ -436,25 +436,28 @@ index 2cbfd9e..d740511 100644
  		var flushGroup sync.WaitGroup
  		scope.Add(func() error {
  			flushGroup.Wait()
-@@ -466,6 +483,17 @@ func (c *CacheFile) LoadRuleSet(tag string) *adapter.SavedBinary {
- 		}
- 		return savedSet.UnmarshalBinary(setBinary)
- 	})
-+	if c.ruleSets != nil {
-+		durable := c.ruleSets.LoadRuleSet(tag)
-+		if durable != nil && (err != nil || durable.LastUpdated.After(savedSet.LastUpdated)) {
-+			return durable
-+		}
-+		if err == nil && (durable == nil || !sameRuleSet(durable, &savedSet)) {
-+			if writeErr := c.ruleSets.saveRuleSet(tag, &savedSet); writeErr != nil {
-+				c.logger.Warn("migrate rule-set cache: ", writeErr)
-+			}
-+		}
+@@ -454,6 +471,20 @@ func (c *CacheFile) StoreGroupExpand(group string, isExpand bool) error {
+ }
+ 
+ func (c *CacheFile) LoadRuleSet(tag string) *adapter.SavedBinary {
++	if saved := c.loadRuleSet(tag); saved != nil {
++		return saved
 +	}
- 	if err != nil {
- 		return nil
- 	}
-@@ -473,6 +501,25 @@ func (c *CacheFile) LoadRuleSet(tag string) *adapter.SavedBinary {
++	return c.LoadPersistentRuleSet(tag)
++}
++
++func (c *CacheFile) LoadPersistentRuleSet(tag string) *adapter.SavedBinary {
++	if c.ruleSets == nil {
++		return nil
++	}
++	return c.ruleSets.loadRuleSet(tag)
++}
++
++func (c *CacheFile) loadRuleSet(tag string) *adapter.SavedBinary {
+ 	var savedSet adapter.SavedBinary
+ 	err := c.view(func(t *bbolt.Tx) error {
+ 		bucket := c.bucket(t, bucketRuleSet)
+@@ -473,6 +504,29 @@ func (c *CacheFile) LoadRuleSet(tag string) *adapter.SavedBinary {
  }
  
  func (c *CacheFile) SaveRuleSet(tag string, set *adapter.SavedBinary) error {
@@ -462,10 +465,14 @@ index 2cbfd9e..d740511 100644
 +	if err := c.saveRuleSet(tag, set); err != nil {
 +		return err
 +	}
++	return c.PersistRuleSet(tag, set)
++}
++
++func (c *CacheFile) PersistRuleSet(tag string, set *adapter.SavedBinary) error {
 +	if c.ruleSets == nil {
 +		return nil
 +	}
-+	previous := c.ruleSets.LoadRuleSet(tag)
++	previous := c.ruleSets.loadRuleSet(tag)
 +	if previous != nil && sameRuleSet(previous, set) {
 +		return nil
 +	}
@@ -519,10 +526,34 @@ index 69837a8..9f093fd 100644
  	InitialPath    string             `json:"initial_path,omitempty"`
  	HTTPClient     *HTTPClientOptions `json:"http_client,omitempty"`
 diff --git a/route/rule/rule_set_remote.go b/route/rule/rule_set_remote.go
-index 5d694d8..7aaadf9 100644
+index 5d694d8..8792b2d 100644
 --- a/route/rule/rule_set_remote.go
 +++ b/route/rule/rule_set_remote.go
-@@ -130,7 +130,7 @@ func (s *RemoteRuleSet) StartContext(ctx context.Context, startContext *adapter.
+@@ -100,22 +100,7 @@ func (s *RemoteRuleSet) StartContext(ctx context.Context, startContext *adapter.
+ 	}
+ 	startContext.Register(transport)
+ 	s.httpClient = &http.Client{Transport: transport}
+-	if s.cacheFile != nil {
+-		savedSet := s.cacheFile.LoadRuleSet(s.tag)
+-		if savedSet != nil {
+-			if len(savedSet.URLHash) > 0 && !bytes.Equal(savedSet.URLHash, s.urlHash[:]) {
+-				s.logger.Info("cached rule-set was downloaded from another URL, will refetch")
+-			} else {
+-				err = s.loadBytes(savedSet.Content)
+-				if err != nil {
+-					s.logger.Warn(E.Cause(err, "restore cached rule-set, will refetch"))
+-				} else {
+-					s.lastUpdated = savedSet.LastUpdated
+-					s.lastEtag = savedSet.LastEtag
+-				}
+-			}
+-		}
+-	}
++	s.restoreSavedRules()
+ 	var loadedFromInitialPath bool
+ 	if s.lastUpdated.IsZero() && s.initialPath != "" {
+ 		var content []byte
+@@ -130,7 +115,7 @@ func (s *RemoteRuleSet) StartContext(ctx context.Context, startContext *adapter.
  		}
  	}
  	if s.lastUpdated.IsZero() && !loadedFromInitialPath {
@@ -531,7 +562,60 @@ index 5d694d8..7aaadf9 100644
  		if err != nil {
  			return E.Cause(err, "initial rule-set: ", s.tag)
  		}
-@@ -279,13 +279,15 @@ func (s *RemoteRuleSet) fetch(ctx context.Context, isStart bool) error {
+@@ -138,6 +123,52 @@ func (s *RemoteRuleSet) StartContext(ctx context.Context, startContext *adapter.
+ 	return nil
+ }
+ 
++// An older release may have left a usable entry in RAM. Promote it only
++// after loading it successfully, and keep the last good flash copy if it fails.
++func (s *RemoteRuleSet) restoreSavedRules() {
++	if s.cacheFile == nil {
++		return
++	}
++	saved := s.cacheFile.LoadRuleSet(s.tag)
++	persistent, hasPersistent := s.cacheFile.(interface {
++		LoadPersistentRuleSet(string) *adapter.SavedBinary
++		PersistRuleSet(string, *adapter.SavedBinary) error
++	})
++	if s.restoreSavedRuleSet(saved) {
++		if hasPersistent {
++			if err := persistent.PersistRuleSet(s.tag, saved); err != nil {
++				s.logger.Warn("persist cached rule set: ", err)
++			}
++		}
++		return
++	}
++	if hasPersistent {
++		fallback := persistent.LoadPersistentRuleSet(s.tag)
++		if s.restoreSavedRuleSet(fallback) {
++			if err := s.cacheFile.SaveRuleSet(s.tag, fallback); err != nil {
++				s.logger.Warn("restore volatile rule-set cache: ", err)
++			}
++		}
++	}
++}
++
++func (s *RemoteRuleSet) restoreSavedRuleSet(saved *adapter.SavedBinary) bool {
++	if saved == nil {
++		return false
++	}
++	if len(saved.URLHash) > 0 && !bytes.Equal(saved.URLHash, s.urlHash[:]) {
++		s.logger.Info("cached rule-set was downloaded from another URL")
++		return false
++	}
++	if err := s.loadBytes(saved.Content); err != nil {
++		s.logger.Warn(E.Cause(err, "restore cached rule-set"))
++		return false
++	}
++	s.lastUpdated = saved.LastUpdated
++	s.lastEtag = saved.LastEtag
++	return true
++}
++
+ func (s *RemoteRuleSet) Metadata() adapter.RuleSetMetadata {
+ 	s.access.RLock()
+ 	defer s.access.RUnlock()
+@@ -279,13 +310,15 @@ func (s *RemoteRuleSet) fetch(ctx context.Context, isStart bool) error {
  	if err != nil {
  		return err
  	}
@@ -552,7 +636,7 @@ index 5d694d8..7aaadf9 100644
  			LastUpdated: s.lastUpdated,
  			Content:     content,
  			LastEtag:    s.lastEtag,
-@@ -296,7 +298,6 @@ func (s *RemoteRuleSet) fetch(ctx context.Context, isStart bool) error {
+@@ -296,7 +329,6 @@ func (s *RemoteRuleSet) fetch(ctx context.Context, isStart bool) error {
  		}
  	}
  	s.logger.Info("updated rule-set ", s.tag)

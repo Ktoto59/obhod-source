@@ -12,7 +12,7 @@ define Package/obhod
   SECTION:=net
   CATEGORY:=Network
   TITLE:=Obhod selective routing service
-  DEPENDS:=+firewall4 +kmod-tun +kmod-nft-tproxy +kmod-nft-queue +uclient-fetch +ca-bundle +jshn +jsonfilter +rpcd +rpcd-mod-file +ucode +ucode-mod-fs
+  DEPENDS:=+firewall4 +kmod-tun +kmod-nft-tproxy +kmod-nft-queue +uclient-fetch +curl +ca-bundle +jshn +jsonfilter +rpcd +rpcd-mod-file +ucode +ucode-mod-fs +ucode-mod-socket
 endef
 
 define Package/obhod/conffiles

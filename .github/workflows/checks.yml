@@ -53,27 +53,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git init --quiet "$RUNNER_TEMP/core-box"
-          git -C "$RUNNER_TEMP/core-box" fetch --depth 1 https://github.com/SagerNet/sing-box 628cb31ffa79cffffd34c2f9cde6cae044e4fc12
-          git -C "$RUNNER_TEMP/core-box" checkout --detach FETCH_HEAD
-          git init --quiet "$RUNNER_TEMP/core-tun"
-          git -C "$RUNNER_TEMP/core-tun" fetch --depth 1 https://github.com/SagerNet/sing-tun f3b42b8b8e061ef849213a776d9fcf3d5f6ea239
-          git -C "$RUNNER_TEMP/core-tun" checkout --detach FETCH_HEAD
-          git init --quiet "$RUNNER_TEMP/core-sing"
-          git -C "$RUNNER_TEMP/core-sing" fetch --depth 1 https://github.com/SagerNet/sing 87773cc9c5b2a4e4fc05cbd2db304ba23ca13515
-          git -C "$RUNNER_TEMP/core-sing" checkout --detach FETCH_HEAD
-          python3 scripts/prepare-network-core.py --sing-box "$RUNNER_TEMP/core-box" --sing-tun "$RUNNER_TEMP/core-tun" --sing "$RUNNER_TEMP/core-sing" --output "$RUNNER_TEMP/patched"
-      - name: Test DNS concurrency and ICMP classification
+          for project in sing-box sing-tun sing; do
+            revision=$(jq -er --arg project "$project" '.upstream[$project]' core/upstream.json)
+            git init --quiet "$RUNNER_TEMP/$project"
+            git -C "$RUNNER_TEMP/$project" fetch --depth 1 "https://github.com/SagerNet/$project" "$revision"
+            git -C "$RUNNER_TEMP/$project" checkout --detach FETCH_HEAD
+          done
+          python3 scripts/prepare-network-core.py --sing-box "$RUNNER_TEMP/sing-box" --sing-tun "$RUNNER_TEMP/sing-tun" --sing "$RUNNER_TEMP/sing" --output "$RUNNER_TEMP/patched"
+      - name: Test DNS concurrency, TUN packet handling and cold startup
         shell: bash
         env:
           GOTOOLCHAIN: local
         run: |
           set -euo pipefail
-          (cd "$RUNNER_TEMP/patched/source" && go test -mod=readonly -race ./dns/transport -run TestObhod -count=1)
-          (cd "$RUNNER_TEMP/patched/source" && go test -mod=readonly -race ./route -run TestObhod -count=1)
-          (cd "$RUNNER_TEMP/patched/source" && go test -mod=readonly -race ./experimental/cachefile -run TestObhod -count=1)
-          (cd "$RUNNER_TEMP/patched/sing" && go test -mod=readonly -race ./common/udpnat2 -run TestObhod -count=1)
+          (cd "$RUNNER_TEMP/patched/source" && go test -mod=readonly -race ./dns/transport ./experimental/cachefile ./protocol/dns ./protocol/tun ./route/rule -run TestObhod -count=1)
           (cd "$RUNNER_TEMP/patched/sing-tun" && go test -mod=readonly -race . ./ping -run TestObhod -count=1)
           sh core/build.sh "$RUNNER_TEMP/patched" "$RUNNER_TEMP/binaries" amd64 lite
           "$RUNNER_TEMP/binaries/sing-box-linux-amd64-lite" obhod-capabilities | grep -qx dns-pool-v1
           "$RUNNER_TEMP/binaries/sing-box-linux-amd64-lite" obhod-capabilities | grep -qx kernel-route-set-v1
+          python3 scripts/test-experimental-rule-set-start.py "$RUNNER_TEMP/binaries/sing-box-linux-amd64-lite"

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local integration test: real OpenWrt ucode + sing-box, no router/WAN changes."""
+"""Local integration test with 192.0.2.42/32 assigned to lo in a private network namespace."""
 import hashlib
 import argparse
 from concurrent.futures import ThreadPoolExecutor
@@ -20,6 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = Path(__file__).resolve().parent.parent
 TOOLS = ROOT / '.tmp/openwrt-tools'
+BOOTSTRAP_ADDRESS = '192.0.2.42'
 
 
 def receive(sock, count):
@@ -44,7 +45,7 @@ def response(data, address='203.0.113.42', rcode=0, ttl=0, nodata=False):
 
 class UDP(socketserver.ThreadingUDPServer):
     daemon_threads = True
-    def __init__(self, drop=False, address='203.0.113.42'):
+    def __init__(self, drop=False, address='203.0.113.42', port=0):
         self.count = 0; self.names = {}
         class Handler(socketserver.BaseRequestHandler):
             def handle(handler):
@@ -72,7 +73,28 @@ class UDP(socketserver.ThreadingUDPServer):
                     answer=response(packet);answer=answer[:3]+b'\x82'+answer[4:6]+b'\0\0'+answer[8:-16]
                     handler.request[1].sendto(answer,handler.client_address)
                 elif not drop:handler.request[1].sendto(response(packet,address),handler.client_address)
-        super().__init__(('127.0.0.1', 0), Handler)
+        super().__init__(('127.0.0.1', port), Handler)
+
+
+def bootstrap_tcp_leaf(port):
+    """Relay framed DNS to the test datagram fixture on the same port."""
+    class Handler(socketserver.BaseRequestHandler):
+        def handle(self):
+            self.request.settimeout(3)
+            try:
+                packet = receive(self.request, struct.unpack('!H', receive(self.request, 2))[0])
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client:
+                    client.settimeout(2)
+                    client.connect(('127.0.0.1', port))
+                    client.send(packet)
+                    reply = client.recv(4096)
+                self.request.sendall(struct.pack('!H', len(reply)) + reply)
+            except (OSError, EOFError):
+                pass
+
+    server = socketserver.ThreadingTCPServer(('127.0.0.1', port), Handler)
+    server.daemon_threads = True
+    return server
 
 
 class TCP(socketserver.ThreadingTCPServer):
@@ -98,7 +120,7 @@ class TCP(socketserver.ThreadingTCPServer):
                         self.count += 1
                         if cmd != 1:
                             client.sendall(b'\x05\x07\x00\x01'+b'\0'*6); return
-                        assert host == '127.0.0.1', 'Test proxy must remain local'
+                        assert host in ('127.0.0.1', BOOTSTRAP_ADDRESS), 'Test proxy must remain local'
                         remote = socket.create_connection((host, port), 2)
                         client.sendall(b'\x05\x00\x00\x01'+b'\0'*6)
                         while True:
@@ -112,7 +134,7 @@ class TCP(socketserver.ThreadingTCPServer):
                             size = struct.unpack('!H', receive(client, 2))[0]
                             packet=receive(client,size)
                             if b'nx-hang' in packet: continue
-                            if b'nx-positive' in packet: time.sleep(.045)
+                            if b'nx-positive' in packet or b'parallel.example' in packet: time.sleep(.045)
                             if b'servfail' in packet:time.sleep(0.08)
                             answer = response(packet,rcode=3 if b'all-nxdomain' in packet else 5 if b'refused' in packet else 2 if b'all-servfail' in packet else 0); self.count += 1
                             client.sendall(struct.pack('!H', len(answer))+answer)
@@ -252,12 +274,17 @@ def main(native_core=None, tools=TOOLS):
         [str(native_core), 'obhod-capabilities'], text=True,
     ).splitlines()
     assert hashlib.sha256(archive.read_bytes()).hexdigest() == '55e52bb34de582a1ebe56bd50f94ff54ac7c77f5bca9cae807656d1930456da4'
-    for port in [1053, 1153, 1154, 1156, 2081, *range(12053, 12067)]:
+    for port in [1053, 1153, 1154, 1155, 1156, 2081, *range(12053, 12067)]:
         with socket.socket() as probe: probe.bind(('127.0.0.1', port))
-    servers = [UDP(drop=True), TCP(), TCP(proxy=True)]
+    drop = UDP(drop=True)
+    healthy = TCP()
+    socks = TCP(proxy=True)
+    bootstrap_primary = UDP(drop=True, port=12061)
+    bootstrap = UDP(address=BOOTSTRAP_ADDRESS, port=12062)
+    servers = [drop, healthy, socks, bootstrap_primary, bootstrap,
+               bootstrap_tcp_leaf(12061), bootstrap_tcp_leaf(12062)]
     processes = []
     for server in servers: threading.Thread(target=server.serve_forever, daemon=True).start()
-    drop, healthy, socks = servers
     try:
         with tempfile.TemporaryDirectory(prefix='obhod-dns-pool-') as directory:
             lab = Path(directory)
@@ -273,7 +300,7 @@ def main(native_core=None, tools=TOOLS):
             else:
                 installed=subprocess.run(['chroot',lab,'/usr/bin/apk','--no-cache','add','ucode-mod-socket'],text=True,capture_output=True)
                 assert installed.returncode==0,installed.stderr
-            for name in ['prepare.uc','native-dns.uc','dns-filter-config.uc','dns-pool-config.uc','dns-pool.uc']:
+            for name in ['prepare.uc','bootstrap-doh.uc','native-dns.uc','dns-filter-config.uc','dns-pool-config.uc','dns-pool.uc']:
                 shutil.copyfile(ROOT/'openwrt/obhod/files/usr/libexec/obhod'/name,lab/'usr/libexec/obhod'/name)
             # Node generates the same graph as LuCI; all test servers are local.
             js = '''const root=process.argv[1],ports=JSON.parse(process.argv[2]);
@@ -283,6 +310,7 @@ const profile=defaultRouterProfile();profile.tunnels=[parseProxyUri('socks5://12
 profile.routing.activeTunnelId=profile.tunnels[0].id;profile.routing.dnsResolverEnabled=true;
 profile.routing.localLists=[{id:'test',name:'Test',enabled:true,domains:['selected.example'],cidrs:[]}];
 const options={dnsPoolMode:'parallel',dnsUpstreams:['udp://127.0.0.1:'+ports[0],'tcp://127.0.0.1:'+ports[1]],dnsBootstrapServers:['192.0.2.53'],...JSON.parse(process.argv[3]||'{}')};
+options.bootstrapDoH=['https://one.fixture.example @ 127.0.0.1','https://two.fixture.example @ 127.0.0.1'];
 const config=generateRouterConfig(profile,options);
 config.inbounds=config.inbounds.filter(i=>i.type!=='tun'&&i.type!=='mixed');
 console.log(JSON.stringify({version:1,profile,options,config}));'''
@@ -301,14 +329,26 @@ console.log(JSON.stringify({version:1,profile,options,config}));'''
             def start():
                 mode = ['experimental-1.15'] if experimental else []
                 inside('/usr/bin/ucode','/usr/libexec/obhod/prepare.uc', *mode)
-                portable = json.loads(settings_path.read_text())['options']['dnsPoolMode'] == 'fallback'
+                settings = json.loads(settings_path.read_text())
+                portable = settings['options']['dnsPoolMode'] == 'fallback'
+                path = lab/'var/run/obhod/config.json'
+                runtime = json.loads(path.read_text())
+                # Substitute only the test resolvers after preparation has
+                # enforced encryption. Production still uses TLS/HTTPS.
+                original_leaves = {s['tag']: s for s in settings['config']['dns']['servers']
+                                   if s['tag'].startswith(('dns-upstream-direct-', 'dns-upstream-proxy-'))}
+                for index, server in enumerate(runtime['dns']['servers']):
+                    fixture = original_leaves.get(server['tag'])
+                    if fixture:
+                        runtime['dns']['servers'][index] = fixture
+                path.write_text(json.dumps(runtime))
                 if native_core:
                     inside('/usr/bin/ucode','/usr/libexec/obhod/native-dns.uc')
                 if native_core and not portable:
                     path=lab/'var/run/obhod/config.json'; runtime=json.loads(path.read_text())
                     # Test-only loopback entry points exercise each pool directly.
-                    for group,port in [('direct',1153),('proxy',1154),('bootstrap',1155)]:
-                        tag='bootstrap-dns' if group=='bootstrap' else group+'-dns'
+                    for group,port in [('direct',1153),('proxy',1154)]:
+                        tag=group+'-dns'
                         runtime['inbounds'].append({'type':'direct','tag':'test-'+group,'listen':'127.0.0.1','listen_port':port})
                         runtime['route']['rules'].insert(0,{'inbound':['test-'+group],'action':'hijack-dns'})
                         runtime['dns']['rules'].insert(0,{'inbound':['test-'+group],'action':'route','server':tag,'disable_cache':True})
@@ -440,8 +480,6 @@ console.log(JSON.stringify({version:1,profile,options,config}));'''
             socks=TCP(proxy=True);servers.append(socks)
             threading.Thread(target=socks.serve_forever,daemon=True).start()
             ports[2]=socks.server_address[1]
-            bootstrap=UDP(address='127.0.0.1');servers.append(bootstrap)
-            threading.Thread(target=bootstrap.serve_forever,daemon=True).start()
             fetched=[]
             class Rules(BaseHTTPRequestHandler):
                 def do_GET(self):
@@ -449,12 +487,9 @@ console.log(JSON.stringify({version:1,profile,options,config}));'''
                     body=b'{"version":3,"rules":[{"domain_suffix":["cold-selected.example"]}]}'
                     self.send_response(200);self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
                 def log_message(self,*args):pass
-            http=ThreadingHTTPServer(('127.0.0.1',0),Rules);servers.append(http)
+            http=ThreadingHTTPServer((BOOTSTRAP_ADDRESS,0),Rules);servers.append(http)
             threading.Thread(target=http.serve_forever,daemon=True).start()
             saved=generate({'dnsUpstreams':[f'tcp://selected.example:{ports[1]}',f'tcp://127.0.0.1:{ports[1]}'],'dnsBootstrapServers':['192.0.2.53','198.51.100.53']})
-            for server in saved['config']['dns']['servers']:
-                if server['tag'].startswith('dns-upstream-bootstrap-'):
-                    server['server']='127.0.0.1';server['server_port']=drop.server_address[1] if server['tag'].endswith('-0') else bootstrap.server_address[1]
             # Real initial HTTP list download must finish before main DNS inbounds
             # exist. HTTPS path selection is checked by the shared generator test.
             saved['config']['route']['rule_set'].append({'type':'remote','tag':'cold-start','format':'source','url':f'http://startup.example:{http.server_port}/rules.json','download_detour':'dns-infrastructure'})
@@ -462,9 +497,9 @@ console.log(JSON.stringify({version:1,profile,options,config}));'''
             assert fetched==['/rules.json']
             print('PASS: cold rule-set download completes before main DNS listeners start')
             assert query(1153 if native_core else 12053,'hostname-resolved.example')=='203.0.113.42'
-            assert query(1155,'bootstrap-answer.example')=='127.0.0.1' and bootstrap.count>0
+            assert query(1155,'bootstrap-answer.example')==BOOTSTRAP_ADDRESS and bootstrap.count>0
             for bad in ['malformed', 'wrong-class', 'wrong-type', 'wrong-id']:
-                assert query(1155, bad+'.example') == '127.0.0.1', 'Untrusted bootstrap response was accepted: '+bad
+                assert query(1155, bad+'.example') == BOOTSTRAP_ADDRESS, 'Untrusted bootstrap response was accepted: '+bad
             began = time.monotonic()
             try: invalid = query(1155, 'all-invalid.example', timeout=5, rcode=True)
             except TimeoutError:
@@ -476,7 +511,7 @@ console.log(JSON.stringify({version:1,profile,options,config}));'''
             assert time.monotonic() - began < (5.3 if native_core else 4.8)
             print('PASS: raw bootstrap rejects malformed packets, wrong ID/QTYPE/QCLASS and bounds all-invalid exchanges')
             assert query(1053,'selected.example').startswith('198.18.')
-            print('PASS: bootstrap has its own parallel failover and cannot recurse through FakeIP')
+            print('PASS: bootstrap uses its own ordered failover without recursing through FakeIP')
             rss=[]
             for p in processes[:-1]:
                 rss.append(next(line.split()[1] for line in Path(f'/proc/{p.pid}/status').read_text().splitlines() if line.startswith('VmRSS:')))
@@ -484,7 +519,8 @@ console.log(JSON.stringify({version:1,profile,options,config}));'''
             stop()
             saved['options']['dnsPoolMode']='single';settings_path.write_text(json.dumps(saved))
             inside('/usr/bin/ucode','/usr/libexec/obhod/dns-pool-config.uc')
-            assert not [p for p in (lab/'var/run/obhod').glob('dns-pool-*.json') if p.name != 'dns-pool-filter.json']
+            remaining = {p.name for p in (lab/'var/run/obhod').glob('dns-pool-*.json')}
+            assert remaining == {'dns-pool-bootstrap.json', 'dns-pool-filter.json'}
             print('PASS: automatic selection and cleanup when returning to single DNS')
             test_filtered_fakeip(lab, inside, processes, pool_log)
             core_log.close();pool_log.close()

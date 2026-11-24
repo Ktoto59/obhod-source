@@ -115,6 +115,14 @@ def check(core):
                 server.shutdown()
                 server.server_close()
 
+        # Corrupt just the volatile rule value, preserving the binary cache
+        # framing and configured URL. The good persistent entry must survive.
+        content = runtime.read_bytes()
+        assert b'"version":4,' in content
+        runtime.write_bytes(content.replace(b'"version":4,', b'"version":9,'))
+        ready, reason = start(core, path, config)
+        assert ready, reason
+
         # Simulate loss of /var/run while every configured tunnel is down.
         runtime.unlink()
         ready, reason = start(core, path, config)
@@ -123,7 +131,7 @@ def check(core):
         config['route']['rule_set'][0]['url'] = 'http://lists.invalid/changed.json'
         ready, reason = start(core, path, config)
         assert not ready and 'no URLTest member returned a valid rule set' in reason, reason
-        print('PASS: cold failover, rejection of malformed lists, offline cache and URL invalidation')
+        print('PASS: cold failover, malformed lists, corrupt RAM cache, offline startup and URL invalidation')
 
 
 if __name__ == '__main__':

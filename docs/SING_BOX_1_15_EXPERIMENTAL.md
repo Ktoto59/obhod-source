@@ -148,7 +148,7 @@ VLESS, WireGuard и статического `route_address_set` без `auto_re
 | Статические проверки Node и генератор | `npm ci --ignore-scripts`, `npm test` | Passed, 98 тестов. 14 встроенных runtime проверок пропущены в Windows source-only worktree |
 | Текущие IPv4/IPv6 и сохранённые профили, `sing-box check` в 24.10/25.12 | `unshare -nm --propagation private python3 scripts/test-experimental-openwrt-config.py --baseline "$BASE" --experimental "$EXP" --tools "$TOOLS"` | Passed, 6 профилей проверены обоими ядрами |
 | DNS pool, FakeIP, отмена | В `PREPARED/source` выполнить `go test -race -mod=readonly ./dns/transport ./experimental/cachefile ./protocol/dns -run TestObhod -count=1` | Passed |
-| Реальные DNS pool, filtered FakeIP и повторяющиеся ID | В приватном namespace с поднятым loopback выполнить `python3 scripts/test-openwrt-dns-pool.py --native-core "$EXP" --tools "$TOOLS"` | Passed, включая 256 запросов, отмену 64 обменов и отсутствие DNS fallback |
+| Реальные DNS pool, filtered FakeIP и повторяющиеся ID | В приватном namespace поднять loopback, назначить `192.0.2.42/32` на `lo` и выполнить `python3 scripts/test-openwrt-dns-pool.py --native-core "$EXP" --tools "$TOOLS"` | Passed, включая 256 запросов, отмену 64 обменов и отсутствие DNS fallback |
 | UDP NAT, redirect ownership, ICMP logging | В `PREPARED/sing-tun` выполнить `go test -race -mod=readonly . ./ping -run TestObhod -count=1` | Passed |
 | Реальный LAN/router origin, IPv4/IPv6, nft/NFQUEUE, FakeIP, WAN source IP, DNS flush, ICMP ping и аварийное восстановление | `unshare -nm --propagation private python3 scripts/test-openwrt-kernel-routing.py "$EXP"` | Passed |
 | Domain-first, server-first и отсутствие прямого DNS при отказе туннелей | Команды namespace ниже | Passed |
