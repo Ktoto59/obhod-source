@@ -35,6 +35,9 @@ def build(binaries, prepared, apk, output):
     upstream_version, revision = VERSION.split('-obhod.')
     release, alpha = upstream_version.split('-alpha.')
     versions = {'apk': f'{release}_alpha{alpha}-r{revision}', 'opkg': f'{release}~alpha{alpha}-{revision}'}
+    # GitHub normalizes tildes in uploaded asset names. Keep opkg's version
+    # ordering in the control file and use the public asset name in the catalog.
+    ipk_asset_version = versions['opkg'].replace('~', '.')
     output.mkdir(parents=True, exist_ok=True)
     records = []
     for arch, (goarch, machine, elf_class) in ARCHITECTURES.items():
@@ -86,7 +89,7 @@ Description: {description}
                 files = {p.relative_to(stage).as_posix(): (p.read_bytes(), p.stat().st_mode & 0o777)
                          for p in stage.rglob('*') if p.is_file()}
                 tar = openwrt_packages.tar_bytes
-                ipk_file = output / f'{name}_{versions["opkg"]}_{arch}.ipk'
+                ipk_file = output / f'{name}_{ipk_asset_version}_{arch}.ipk'
                 ipk_file.write_bytes(tar({
                     'debian-binary': (b'2.0\n', 0o644),
                     'control.tar.gz': (tar({'control': (control.encode(), 0o644)}), 0o644),
